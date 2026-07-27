@@ -4,8 +4,8 @@
 // 多角色系统 — AI生成高质量精灵图 + 动画适配
 // ═══════════════════════════════════════════════
 
-// ── 角色定义 ──
-const CHARACTERS = {
+// ── 角色定义（从 game_config.json 加载，失败时回退到内置默认）──
+const CHARACTERS = (window.GAME_CONFIG && window.GAME_CONFIG.characters) || {
   slime: {
     name: '史莱姆',
     icon: '🟦',

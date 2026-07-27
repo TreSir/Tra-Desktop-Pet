@@ -8,6 +8,10 @@ contextBridge.exposeInMainWorld('petAPI', {
   stopCursorPoll: () => ipcRenderer.send('stop-cursor-poll'),
   physicsDrop: (vx, vy) => ipcRenderer.send('physics-drop', vx, vy),
   physicsCancel: () => ipcRenderer.send('physics-cancel'),
+  // 设置窗口是否点击穿透（true=穿透到桌面，false=可点击宠物）
+  setClickThrough: (through) => ipcRenderer.send('set-click-through', through),
+  // 同步当前 zoom 给主进程（用于计算光圈边界）
+  syncZoom: (zoom) => ipcRenderer.send('sync-zoom', zoom),
 
   // ── 调试：保存抠图结果 ──
   saveSpriteDebug: (name, dataUrl) => ipcRenderer.send('save-sprite-debug', name, dataUrl),
@@ -17,6 +21,29 @@ contextBridge.exposeInMainWorld('petAPI', {
   onFoodsUpdate: (cb) => ipcRenderer.on('foods-update', (_e, val) => cb(val)),
   // 通知主进程桌宠吃掉了某食物
   eatFood: (foodId) => ipcRenderer.send('eat-food', foodId),
+
+  // ── 设置 ──
+  // 接收设置变化 {key, value}
+  onSettingsChanged: (cb) => ipcRenderer.on('settings-changed', (_e, val) => cb(val)),
+
+  // ── 羁绊币 ──
+  // 上报获得金币
+  addCoins: (amount) => ipcRenderer.send('coins-add', amount),
+  // 查询当前余额
+  getCoins: () => ipcRenderer.invoke('coins-get'),
+  // 消费金币（返回 {ok, coins, reason?}）
+  spendCoins: (amount) => ipcRenderer.invoke('coins-spend', amount),
+  // 监听余额变化
+  onCoinsUpdate: (cb) => ipcRenderer.on('coins-update', (_e, val) => cb(val)),
+
+  // ── 商店解锁状态 ──
+  // 查询当前解锁列表与启用特效（返回 {unlocked, effectsOn}）
+  getShopState: () => ipcRenderer.invoke('shop-get-state').then(s => ({
+    unlocked: s.unlocked,
+    effectsOn: s.effectsOn,
+  })),
+  // 监听解锁/启用状态变化
+  onShopUnlocksChanged: (cb) => ipcRenderer.on('shop-unlocks-changed', (_e, val) => cb(val)),
 
   // ── 事件监听 ──
   onEmotionChange: (cb) => ipcRenderer.on('emotion-change', (_e, val) => cb(val)),

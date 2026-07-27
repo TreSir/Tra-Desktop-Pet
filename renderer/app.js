@@ -11,8 +11,8 @@
 
 // ─── 可调参数 ───
 const CFG = {
-  W: 280, H: 340,
-  cx: 140, cy: 205, r: 52,
+  W: 420, H: 460,
+  cx: 210, cy: 230, r: 60,
   walkSpeed: 28,
   eyeTrackK: 0.38,
   dragThrowMin: 2,
@@ -184,6 +184,11 @@ const pet = {
   evolutionLevel: 0,    // 0=普通, 1=闪耀, 2=彩虹, 3=传说
   evoGlow: 0,           // 进化光环强度
 
+  // ── 羁绊币 ──
+  coins: 0,             // 当前余额（从主进程同步）
+  coinPopups: [],       // 飘字动画 [{x, y, vy, life, amount}]
+  coinDisplayAlpha: 0,  // 顶部计数显示的淡入淡出
+
   // ── 舞蹈模式 ──
   dancing: false,
   danceTimer: 0,
@@ -203,6 +208,13 @@ const pet = {
   // ── 边缘窥探 ──
   edgePeek: 0,
   edgePeekDir: 0,
+
+  // ── 商店解锁 ──
+  shopUnlocked: [],       // 已解锁商品 id（表情/特效）
+  shopEffectsOn: [],      // 已启用的特效 id
+  _shopTick: 0,           // 特效生成计时器
+  _lastPosX: 0,           // 上次位置（用于闪电拖尾判断）
+  _lastPosY: 0,
 };
 
 // ─── 颜色辅助 ───
@@ -217,6 +229,27 @@ function moodColor(mood) {
   if (mood > 30) return [180, 180, 100];  // 黄绿 - 无聊
   if (mood > 15) return [100, 130, 200];  // 蓝灰 - 难过
   return [255, 80, 60];                    // 红色 - 愤怒
+}
+
+// HSL→RGB（用于彩虹光环特效）
+function hslToRgb(h, s, l) {
+  h = ((h % 360) + 360) % 360 / 360;
+  s = clamp(s, 0, 1); l = clamp(l, 0, 1);
+  if (s === 0) { const v = (l * 255) | 0; return [v, v, v]; }
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const hue2rgb = (p, q, t) => {
+    if (t < 0) t += 1; if (t > 1) t -= 1;
+    if (t < 1/6) return p + (q - p) * 6 * t;
+    if (t < 1/2) return q;
+    if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+    return p;
+  };
+  return [
+    (hue2rgb(p, q, h + 1/3) * 255) | 0,
+    (hue2rgb(p, q, h)       * 255) | 0,
+    (hue2rgb(p, q, h - 1/3) * 255) | 0,
+  ];
 }
 
 // ═══════════════════════════════════════════════
@@ -851,8 +884,17 @@ function updateEating(dt) {
 let foods = [];                 // 缓存主进程推送的食物列表
 let windowX = 0, windowY = 0;   // 桌宠窗口在屏幕的坐标（由 cursor-pos 附带推送）
 let foodSeeking = false;        // 是否正在前往食物
-const FOOD_SEEK_SPEED = 320;    // 寻路速度（像素/秒）
-const FOOD_EAT_DIST = 45;       // 到达食物的判定距离
+// 运行时设置（由 settings-changed 推送更新）
+const RUNTIME = {
+  walkSpeed: 28,
+  foodSeekSpeed: 320,
+  foodEatDist: 45,
+  energyDecay: 0.3,
+  energyRecover: 2.0,
+  eyeTrack: true,
+  blink: true,
+  particles: true,
+};
 let foodMoveAccumX = 0, foodMoveAccumY = 0; // 累积移动量，减少 IPC 频率
 
 let foodSeekLogTimer = 0;
@@ -885,30 +927,68 @@ function updateFoodSeeking(dt) {
   const dist = Math.hypot(dx, dy);
 
   // 到达食物 → 吃掉
-  if (dist < FOOD_EAT_DIST) {
+  if (dist < RUNTIME.foodEatDist) {
     console.log(`[FOOD] Reached target id=${target.id}, eating!`);
     window.petAPI.eatFood(target.id);
     foods.shift(); // 本地立即移除，避免重复触发
     foodSeeking = false;
+    // 重置速度与起步进度，下次重新加速
+    pet._foodSpeedX = 0;
+    pet._foodSpeedY = 0;
+    pet._foodAccelT = 0;
     feedPet();      // 触发进食交互
     return;
   }
 
-  // 朝目标移动（累积移动量，每帧累积，达到 1 像素才发送 IPC 减少开销）
+  // 朝目标移动（非线性缓动：起步慢加速 + 中段脉冲步态 + 接近食物减速 + 明显抖动）
   foodSeeking = true;
   const dirX = dx / dist;
   const dirY = dy / dist;
-  foodMoveAccumX += dirX * FOOD_SEEK_SPEED * dt;
-  foodMoveAccumY += dirY * FOOD_SEEK_SPEED * dt;
-  // 每帧都发送（move-window 内部会做边界限制）
-  const moveX = foodMoveAccumX;
-  const moveY = foodMoveAccumY;
-  foodMoveAccumX -= moveX;
-  foodMoveAccumY -= moveY;
-  window.petAPI.moveWindow(moveX, moveY);
-  // 同步本地窗口位置（减少画面抖动）
-  windowX += moveX;
-  windowY += moveY;
+
+  // ── 1. 距离→速度系数（非线性：远处全速 → 近处急减速）──
+  const FAR_DIST = 240;
+  const NEAR_DIST = RUNTIME.foodEatDist;
+  let speedFactor;
+  if (dist > FAR_DIST) {
+    speedFactor = 1;
+  } else {
+    const t = clamp((dist - NEAR_DIST) / (FAR_DIST - NEAR_DIST), 0, 1);
+    // easeInExpo：近处减速特别急，营造"急刹车凑近"的笨拙感
+    const eased = t < 0.35 ? Math.pow(t / 0.35, 2.5) * 0.4 : 0.4 + easeOutCubic((t - 0.35) / 0.65) * 0.6;
+    speedFactor = Math.max(0.12, eased);
+  }
+
+  // ── 2. 起步 easeIn 加速（前段慢，后段跟上）──
+  if (pet._foodSpeedX == null) { pet._foodSpeedX = 0; pet._foodSpeedY = 0; pet._foodAccelT = 0; }
+  pet._foodAccelT = Math.min(1, pet._foodAccelT + dt * 2.0); // 约 0.5 秒完成起步
+  // easeInQuad：起步慢加速，自然过渡到全速
+  const accelCurve = Math.pow(pet._foodAccelT, 2);
+
+  // 目标速度（叠加起步曲线）
+  const targetVX = dirX * RUNTIME.foodSeekSpeed * speedFactor * accelCurve;
+  const targetVY = dirY * RUNTIME.foodSeekSpeed * speedFactor * accelCurve;
+
+  // lerp 逼近目标速度（平滑过渡，时间无关）
+  const accelLerp = 1 - Math.pow(0.25, dt);
+  pet._foodSpeedX += (targetVX - pet._foodSpeedX) * accelLerp;
+  pet._foodSpeedY += (targetVY - pet._foodSpeedY) * accelLerp;
+
+  // 合成最终位移（纯缓动，无脉冲无抖动）
+  const moveX = pet._foodSpeedX * dt;
+  const moveY = pet._foodSpeedY * dt;
+
+  foodMoveAccumX += moveX;
+  foodMoveAccumY += moveY;
+  // 累积到 1 像素才发送 IPC，减少调用频率
+  const sendX = Math.trunc(foodMoveAccumX);
+  const sendY = Math.trunc(foodMoveAccumY);
+  if (sendX !== 0 || sendY !== 0) {
+    window.petAPI.moveWindow(sendX, sendY);
+    foodMoveAccumX -= sendX;
+    foodMoveAccumY -= sendY;
+    windowX += sendX;
+    windowY += sendY;
+  }
 
   // 行走动画
   pet.walking = true;
@@ -1108,7 +1188,14 @@ function drawTentacles(ctx, t, pts, params) {
 // 光环系统（心情驱动）
 // ═══════════════════════════════════════════════
 function drawAura(ctx, t, rx, ry) {
-  const [r, g, b] = moodColor(pet.mood);
+  let r, g, b;
+  if (pet.shopEffectsOn && pet.shopEffectsOn.includes('rainbow')) {
+    // 彩虹色：基于时间持续变换 hue
+    const c = hslToRgb((t * 30) % 360, 80, 60);
+    r = c[0]; g = c[1]; b = c[2];
+  } else {
+    [r, g, b] = moodColor(pet.mood);
+  }
   const pulse = 0.5 + Math.sin(t * 1.5 + pet.auraPhase) * 0.3;
   const auraR = Math.max(rx, ry) * (1.35 + pulse * 0.15);
 
@@ -1587,10 +1674,10 @@ function setStatus(status) {
 function updateMood(dt) {
   // 能量自然消耗
   if (!pet.sleeping) {
-    pet.energy -= dt * 0.3;
+    pet.energy -= dt * RUNTIME.energyDecay;
     if (pet.dragging || pet.falling) pet.energy -= dt * 1.5;
   } else {
-    pet.energy += dt * 2; // 睡觉恢复
+    pet.energy += dt * RUNTIME.energyRecover; // 睡觉恢复
   }
   pet.energy = clamp(pet.energy, 0, 100);
 
@@ -1817,6 +1904,44 @@ function updateSpringPhysics(dt, t) {
   pet.bobY = pet.sleeping ? Math.sin(t * 0.5) * 1 : Math.sin(t * 1.1) * 2.2;
   pet.auraPhase += dt;
 
+  // ── 商店特效生成 ──
+  pet._shopTick = (pet._shopTick || 0) + dt;
+  const fx = pet.shopEffectsOn || [];
+  if (fx.length) {
+    // 心形粒子：每 0.6s 生成一个
+    if (fx.includes('hearts') && pet._shopTick % 0.6 < dt) spawnHeart();
+    // 星尘：高频小粒子
+    if (fx.includes('stardust') && Math.random() < dt * 8) {
+      // 复用粒子池，但用金色
+      spawnParticle();
+      // 改最后一个粒子的颜色为金色
+      const last = particlePool[particlePool.length - 1];
+      // 实际上 spawnParticle 用 _idx 标记，取栈顶刚弹出的那个
+      // 简化：直接遍历最末尾活跃的，hue 改成 50（金色）
+      for (let i = particlePool.length - 1; i >= 0; i--) {
+        if (particlePool[i].active) {
+          particlePool[i].hue = 50;
+          particlePool[i].decay *= 0.8;
+          break;
+        }
+      }
+    }
+    // 闪电拖尾：移动时生成（基于上次位置差）
+    if (fx.includes('lightning') && (pet.walking || pet.dragging)) {
+      if (pet._shopTick % 0.05 < dt) {
+        pet.cracks.push({
+          x: CFG.cx + (Math.random() - 0.5) * 20,
+          y: CFG.cy + 30 + (Math.random() - 0.5) * 20,
+          vx: (Math.random() - 0.5) * 1,
+          vy: 0.5,
+          size: 1.5,
+          life: 0.6,
+          rot: 0,
+        });
+      }
+    }
+  }
+
   const springK = 0.12;
   const dampK = 0.82;
   const forceX = (1 - pet.squashX) * springK;
@@ -1837,7 +1962,12 @@ function updateSpringPhysics(dt, t) {
   }
 
   // 缩放插值
+  const oldZoom = pet.zoom;
   pet.zoom = lerp(pet.zoom, pet.zoomTarget, clamp(dt * 5, 0, 1));
+  // zoom 变化时同步给主进程（用于光圈边界计算）
+  if (Math.abs(pet.zoom - oldZoom) > 0.005) {
+    window.petAPI.syncZoom(pet.zoom);
+  }
 
   // 长按挣扎
   if (pet.struggling) {
@@ -1854,7 +1984,18 @@ function updateSpringPhysics(dt, t) {
       else { pet.walkDir = Math.random() < 0.5 ? -1 : 1; pet.walkTimer = 1.5 + Math.random() * 2.5; }
     }
     if (pet.walking) {
-      pet.walkAccum += pet.walkDir * CFG.walkSpeed * dt;
+      // 边界检测：光圈快到屏幕边时反转方向（避免顶墙一直走）
+      const auraR = CFG.r * pet.zoom * 1.5;
+      const screenW = window.screen.availWidth;
+      const screenH = window.screen.availHeight;
+      // windowX 是窗口左上角屏幕坐标；宠物中心 = windowX + CFG.cx
+      const petCx = windowX + CFG.cx;
+      if (pet.walkDir > 0 && petCx + auraR >= screenW - 5) {
+        pet.walkDir = -1;
+      } else if (pet.walkDir < 0 && petCx - auraR <= 5) {
+        pet.walkDir = 1;
+      }
+      pet.walkAccum += pet.walkDir * RUNTIME.walkSpeed * dt;
       if (Math.abs(pet.walkAccum) >= 1) {
         const move = Math.trunc(pet.walkAccum);
         pet.walkAccum -= move;
@@ -1973,6 +2114,8 @@ function loop(ts) {
   updateCracks(dt);
   updateSparkles(dt);
   updateLanAnimations(dt, t);
+  updateLanSearch(dt);
+  updateCoins(dt);
   updateNotes(dt);
   updateFootprints(dt);
   updateShockwaves(dt);
@@ -2108,6 +2251,12 @@ function loop(ts) {
   // 气泡
   drawBubble(ctx);
 
+  // 联机搜索状态（最上层）
+  drawLanSearch(ctx);
+
+  // 羁绊币（飘字 + 顶部计数）
+  drawCoins(ctx);
+
   ctx.restore(); // 屏震 restore
 
   requestAnimationFrame(loop);
@@ -2180,13 +2329,33 @@ let pressTimer = 0;
 let clickCount = 0;
 let lastClickTime = 0;
 
+// 命中检测：根据当前 zoom 动态计算宠物可点击范围
+// 包括身体 + 光圈，缩小/放大时范围同步变化
+function isPetHit(x, y) {
+  // 自由落体时整个 canvas 都能接（方便接住）
+  if (pet.falling) return true;
+  const dx = x - CFG.cx, dy = y - CFG.cy;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  // 宠物身体半径 + 光圈（auraR = r * 1.5），都乘以 zoom
+  const hitR = CFG.r * pet.zoom * 1.55;
+  return dist <= hitR;
+}
+
 canvas.addEventListener('mousedown', (e) => {
+  // 命中检测：缩小后只有宠物+光圈范围内可点击
+  if (!isPetHit(e.clientX, e.clientY)) return;
+
   dSX = e.screenX; dSY = e.screenY; lMX = e.screenX; lMY = e.screenY;
   downT = Date.now();
   pet.dragging = false;
   pet.dragHist = [];
   pet.sleepTimer = 30;
-  if (pet.falling) { window.petAPI.physicsCancel(); pet.falling = false; }
+  if (pet.falling) {
+    // ── 自由落体中被接住：触发庆祝反应 ──
+    window.petAPI.physicsCancel();
+    pet.falling = false;
+    onCaughtMidAir(e.clientX, e.clientY);
+  }
 
   // 长按检测
   pressTimer = setTimeout(() => {
@@ -2197,10 +2366,146 @@ canvas.addEventListener('mousedown', (e) => {
   }, 500);
 });
 
+// ═══════════════════════════════════════════════
+// 自由落体中被接住的庆祝反应
+// ═══════════════════════════════════════════════
+const CATCH_PRAISES = [
+  '接得漂亮！',
+  '哇！谢谢你！',
+  '好身手！',
+  '差点摔死我了！',
+  '英雄救美！',
+  '你反应真快！',
+  '吓死我了~',
+  '终于等到你！',
+];
+let catchCooldown = 0;  // 避免短时间内重复触发
+
+function onCaughtMidAir(x, y) {
+  const now = Date.now();
+  if (now - catchCooldown < 1500) return; // 1.5s 冷却
+  catchCooldown = now;
+  // 飘字位置默认使用接住位置
+  const px = x != null ? x : CFG.cx;
+  const py = y != null ? y : CFG.cy - 30;
+
+  // 心情大涨
+  pet.mood = clamp(pet.mood + 18, 0, 100);
+  pet.energy = clamp(pet.energy + 8, 0, 100);
+
+  // 表情：先震惊后开心
+  setEmotion('shocked', '？！');
+  setTimeout(() => setEmotion('happy', CATCH_PRAISES[Math.floor(Math.random() * CATCH_PRAISES.length)]), 200);
+  setTimeout(() => setEmotion('love', '♥'), 1400);
+  setTimeout(() => setEmotion('relaxed', ''), 3200);
+
+  // 弹性挤压（被接住的冲击感）
+  pet.squashVY += -0.32;
+  pet.squashVX += 0.25;
+
+  // 心形粒子（感激）
+  for (let i = 0; i < 6; i++) {
+    setTimeout(() => spawnHeart(), i * 80);
+  }
+  // 星尘闪烁
+  for (let i = 0; i < 10; i++) {
+    spawnSparkle();
+  }
+  // 微屏震
+  pet.shakeIntensity = 0.12;
+
+  // 进化系统加经验
+  pet.totalPets++;
+
+  // 羁绊币奖励（被接住是大奖励，从接住位置飞出）
+  gainCoins(COIN_REWARDS.catch, 'catch', px, py);
+
+  console.log('[CATCH] Caught mid-air! Triggering celebration.');
+}
+
+// ═══════════════════════════════════════════════
+// 羁绊币系统
+// 接触宠物即获得，可积累用于后续兑换交互
+// ═══════════════════════════════════════════════
+// 金币配置从 game_config.json 读取（启用开关、冷却时间、各类奖励数值）
+const COIN_CFG = (window.GAME_CONFIG && window.GAME_CONFIG.coins) || {};
+const COIN_ENABLED = COIN_CFG.enabled !== false;  // 默认开启
+const COIN_COOLDOWN_MS = COIN_CFG.cooldownMs != null ? COIN_CFG.cooldownMs : 80;
+const COIN_REWARDS = (COIN_CFG.rewards) || {
+  pet:      1,   // 单次点击抚摸
+  combo3:   3,   // 三连击
+  combo5:   8,   // 五连击
+  catch:    15,  // 自由落体被接住
+  drag:     2,   // 拖拽结束
+};
+let coinGainCooldown = 0;   // 防止单次操作连续触发
+
+// 产生金币飘字动画
+function spawnCoinPopup(x, y, amount) {
+  pet.coinPopups.push({
+    x: x != null ? x : CFG.cx,
+    y: y != null ? y : CFG.cy - 20,
+    vy: -1.2,
+    life: 1.4,
+    amount,
+  });
+}
+
+// 获得金币（带冷却防刷；可在配置中关闭）
+function gainCoins(amount, reason, x, y) {
+  if (!COIN_ENABLED) return;       // 配置关闭则不发放
+  if (amount <= 0) return;
+  const now = performance.now();
+  if (now - coinGainCooldown < COIN_COOLDOWN_MS) return;
+  coinGainCooldown = now;
+  window.petAPI.addCoins(amount);
+  spawnCoinPopup(x, y, amount);
+  // 顶部计数显示淡入
+  pet.coinDisplayAlpha = 1;
+  console.log(`[COINS] +${amount} (${reason})`);
+}
+
+// 更新金币飘字
+function updateCoins(dt) {
+  for (let i = pet.coinPopups.length - 1; i >= 0; i--) {
+    const p = pet.coinPopups[i];
+    p.y += p.vy;
+    p.vy *= 0.97;
+    p.life -= dt * 0.9;
+    if (p.life <= 0) pet.coinPopups.splice(i, 1);
+  }
+}
+
+// 绘制金币飘字
+function drawCoins(ctx) {
+  for (const p of pet.coinPopups) {
+    const a = clamp(p.life, 0, 1);
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.font = 'bold 14px "Microsoft YaHei",sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    // 描边
+    ctx.strokeStyle = 'rgba(120,80,0,0.9)';
+    ctx.lineWidth = 3;
+    ctx.strokeText(`+${p.amount}🪙`, p.x, p.y);
+    // 金色填充
+    ctx.fillStyle = '#ffd54a';
+    ctx.fillText(`+${p.amount}🪙`, p.x, p.y);
+    ctx.restore();
+  }
+}
+
 canvas.addEventListener('mousemove', (e) => {
   if (e.buttons !== 1) {
-    const dx = e.clientX - CFG.cx, dy = e.clientY - CFG.cy;
-    pet.hovering = (dx * dx + dy * dy) < 60 * 60;
+    // hovering 范围 = mousedown 命中范围（统一用 isPetHit）
+    pet.hovering = isPetHit(e.clientX, e.clientY);
+
+    // 点击穿透切换：在宠物身上 → 可点击；离开宠物 → 穿透到桌面
+    // dragging/falling 期间不切换，避免拖拽中断
+    if (!pet.dragging && !pet.falling) {
+      window.petAPI.setClickThrough(!pet.hovering);
+    }
     return;
   }
 
@@ -2256,10 +2561,14 @@ canvas.addEventListener('mouseup', (e) => {
       pet.falling = true;
       window.petAPI.physicsDrop(vx, vy);
       setEmotion('scared', '啊！');
+      // 自由落体期间窗口必须可点击，否则无法接住
+      window.petAPI.setClickThrough(false);
     } else {
       pet.squashVY += (0.82 - pet.squashY) * 0.15;
       pet.squashVX += (1.18 - pet.squashX) * 0.15;
       setEmotion('relaxed', '');
+      // 拖拽结束奖励（从释放位置飞出）
+      gainCoins(COIN_REWARDS.drag, 'drag', e.clientX, e.clientY);
     }
   } else if (Date.now() - downT < 250) {
     // 点击
@@ -2296,25 +2605,36 @@ canvas.addEventListener('mouseup', (e) => {
       clickCount = 0;
       pet.mood = clamp(pet.mood + 10, 0, 100);
       for (let i = 0; i < 5; i++) spawnHeart();
-      // 五连击 → 舞蹈
+      // 五连击 → 舞蹈 + 大额金币奖励
       if (pet.combo >= 5) {
         setTimeout(() => startDance(), 600);
+        gainCoins(COIN_REWARDS.combo5, 'combo5', e.clientX, e.clientY);
+      } else {
+        // 三连击奖励
+        gainCoins(COIN_REWARDS.combo3, 'combo3', e.clientX, e.clientY);
       }
     } else if (pet.petCount >= 3) {
       setEmotion('love', '好喜欢~');
       pet.petCount = 0;
       pet.mood = clamp(pet.mood + 8, 0, 100);
       for (let i = 0; i < 3; i++) spawnHeart();
+      gainCoins(COIN_REWARDS.combo3, 'pet3', e.clientX, e.clientY);
     } else {
       const r = ['happy', 'proud', 'relaxed'];
       const msgs = ['~', '嗯~', '嘿！', '舒服~', '嘿嘿', '再摸摸~'];
       setEmotion(r[(Math.random() * 3) | 0], msgs[(Math.random() * msgs.length) | 0]);
+      // 单次抚摸奖励（从点击位置飞出）
+      gainCoins(COIN_REWARDS.pet, 'pet', e.clientX, e.clientY);
     }
   }
   pet.hovering = false;
+  // 拖拽结束，恢复穿透状态（鼠标当前位置不在宠物身上则穿透）
+  const stillOnPet = isPetHit(e.clientX, e.clientY);
+  window.petAPI.setClickThrough(!stillOnPet);
 });
 
-canvas.addEventListener('dblclick', () => {
+canvas.addEventListener('dblclick', (e) => {
+  if (!isPetHit(e.clientX, e.clientY)) return;
   pet.squashVY += -0.3;
   pet.squashVX += 0.25;
   setEmotion('shocked', '！');
@@ -2332,6 +2652,9 @@ canvas.addEventListener('wheel', (e) => {
   else if (pet.zoomTarget < 0.7) setEmotion('scared', '好小…');
   else setEmotion('shocked', '！');
   pet.sleepTimer = 30;
+  // 缩放后立即重新计算穿透状态（宠物大小变了，可点击范围也变了）
+  const onPet = isPetHit(e.clientX, e.clientY);
+  window.petAPI.setClickThrough(!onPet);
 }, { passive: false });
 
 // 右键喂食
@@ -2432,6 +2755,61 @@ window.petAPI.onFoodsUpdate((list) => {
   console.log(`[FOOD] Received ${foods.length} foods`);
 });
 
+// 接收设置变化，实时应用
+window.petAPI.onSettingsChanged(({ key, value }) => {
+  if (key in RUNTIME) {
+    RUNTIME[key] = value;
+    console.log(`[SETTINGS] applied: ${key} = ${value}`);
+  }
+});
+
+// ═══════════════════════════════════════════════
+// 羁绊币初始化与监听
+// ═══════════════════════════════════════════════
+(async () => {
+  try {
+    const balance = await window.petAPI.getCoins();
+    pet.coins = balance;
+    console.log(`[COINS] Initial balance: ${balance}`);
+  } catch (e) {
+    console.warn('[COINS] Init failed:', e.message);
+  }
+})();
+
+window.petAPI.onCoinsUpdate((balance) => {
+  pet.coins = balance;
+});
+
+// ═══════════════════════════════════════════════
+// 商店解锁状态
+// ═══════════════════════════════════════════════
+function applyShopUnlocks(data) {
+  if (!data) return;
+  pet.shopUnlocked = Array.isArray(data.unlocked) ? data.unlocked : [];
+  pet.shopEffectsOn = Array.isArray(data.effectsOn) ? data.effectsOn : [];
+  console.log('[SHOP] unlocked:', pet.shopUnlocked, 'on:', pet.shopEffectsOn);
+}
+
+// 启动时主动查询一次
+(async () => {
+  try {
+    if (window.petAPI.getShopState) {
+      const state = await window.petAPI.getShopState();
+      applyShopUnlocks(state);
+    }
+  } catch (e) { /* 旧版本无此 API，忽略 */ }
+})();
+
+// 监听解锁变化
+if (window.petAPI.onShopUnlocksChanged) {
+  window.petAPI.onShopUnlocksChanged((data) => applyShopUnlocks(data));
+}
+
+// 初始化：默认窗口点击穿透，鼠标移到宠物身上才可点击
+window.petAPI.setClickThrough(true);
+// 同步初始 zoom 给主进程
+window.petAPI.syncZoom(pet.zoom);
+
 window.petAPI.onPhysicsBounce((force) => {
   pet.squashVY += clamp(-force * 0.04, -0.2, 0);
   pet.squashVX += clamp(force * 0.03, 0, 0.15);
@@ -2450,6 +2828,8 @@ window.petAPI.onPhysicsLanded(() => {
   spawnShockwave(CFG.cx, CFG.cy + 35, 1.5);
   spawnCracks(CFG.cx, CFG.cy + 35, 6, 0.8);
   pet.shakeIntensity = 0.15;
+  // 落地后恢复穿透（让桌面可点击）
+  window.petAPI.setClickThrough(true);
   setTimeout(() => setEmotion('happy', '~'), 400);
 });
 
@@ -2457,33 +2837,162 @@ window.petAPI.onPhysicsLanded(() => {
 // 局域网联机事件
 // ═══════════════════════════════════════════════
 let lanEnabled = false;
+let lanPeerCount = 0;           // 当前已连接的 peer 数
+let lanSearchTimer = 0;         // 搜索状态闪烁计时器（>0 表示正在显示搜索提示）
+let lanSearchCycleTimer = 0;    // 周期计时器（用于每隔一段时间触发一次）
+
 window.petAPI.onLanToggle((enabled) => {
   lanEnabled = enabled;
   if (enabled) {
     setEmotion('happy', '联机已开启');
     setTimeout(() => setEmotion('relaxed', ''), 2000);
+    // 开启后立即显示一次搜索提示
+    lanSearchTimer = 2.2;
+    lanSearchCycleTimer = 8; // 8 秒后再次显示
   } else {
     setEmotion('sad', '联机已关闭');
     setTimeout(() => setEmotion('relaxed', ''), 2000);
+    lanSearchTimer = 0;
+    lanSearchCycleTimer = 0;
+    lanPeerCount = 0;
   }
 });
 
-// peer 列表变化提示
 window.petAPI.onPeersChanged((data) => {
   if (!lanEnabled || !data) return;
   const event = data.event;
   const info = data.info;
   if (event === 'add' && info && info.name) {
+    lanPeerCount = Math.max(0, lanPeerCount + 1);
     setEmotion('happy', `${info.name} 上线`);
     setTimeout(() => setEmotion('relaxed', ''), 2500);
-  } else if (event === 'remove' && Array.isArray(info)) {
-    const names = info.map(p => p.name).join(', ');
+    // 找到 peer，停止显示搜索提示
+    lanSearchTimer = 0;
+    lanSearchCycleTimer = 0;
+  } else if (event === 'remove') {
+    const removedCount = Array.isArray(info) ? info.length : 1;
+    lanPeerCount = Math.max(0, lanPeerCount - removedCount);
+    const names = Array.isArray(info) ? info.map(p => p.name).join(', ') : (info && info.name || '');
     if (names) {
       setEmotion('sad', `${names} 离线`);
       setTimeout(() => setEmotion('relaxed', ''), 2500);
     }
+    // peer 全没了，重新开始搜索周期
+    if (lanPeerCount === 0) {
+      lanSearchTimer = 2.2;
+      lanSearchCycleTimer = 8;
+    }
   }
 });
+
+// 更新联机搜索状态（每帧调用）
+function updateLanSearch(dt) {
+  if (!lanEnabled || lanPeerCount > 0) {
+    return;
+  }
+  // 显示中：倒计时
+  if (lanSearchTimer > 0) {
+    lanSearchTimer -= dt;
+    if (lanSearchTimer <= 0) {
+      lanSearchTimer = 0;
+      lanSearchCycleTimer = 8; // 隐藏后等 8 秒再显示
+    }
+    return;
+  }
+  // 等待中：周期计时
+  if (lanSearchCycleTimer > 0) {
+    lanSearchCycleTimer -= dt;
+    if (lanSearchCycleTimer <= 0) {
+      lanSearchTimer = 2.2; // 显示 2.2 秒
+    }
+  }
+}
+
+// 绘制联机搜索状态（头顶气泡）
+function drawLanSearch(ctx) {
+  if (!lanEnabled || lanPeerCount > 0) return;
+  if (lanSearchTimer <= 0) return;
+
+  // 淡入淡出：前 0.25s 淡入，后 0.4s 淡出
+  const total = 2.2;
+  const elapsed = total - lanSearchTimer;
+  let alpha = 1;
+  if (elapsed < 0.25) alpha = elapsed / 0.25;
+  else if (lanSearchTimer < 0.4) alpha = lanSearchTimer / 0.4;
+  alpha = clamp(alpha, 0, 1);
+
+  const bx = CFG.cx, by = CFG.cy - 76;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+
+  // 脉冲呼吸效果
+  const pulse = 0.95 + Math.sin(performance.now() * 0.006) * 0.05;
+  ctx.translate(bx, by);
+  ctx.scale(pulse, pulse);
+  ctx.translate(-bx, -by);
+
+  // ── 雷达扫描小图标（左侧）──
+  const iconX = bx - 36, iconY = by;
+  const r = 6;
+  // 外圈
+  ctx.strokeStyle = 'rgba(0,200,255,0.4)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(iconX, iconY, r, 0, TAU);
+  ctx.stroke();
+  // 扫描扇形
+  const sweepAngle = (performance.now() * 0.004) % TAU;
+  ctx.fillStyle = 'rgba(0,200,255,0.25)';
+  ctx.beginPath();
+  ctx.moveTo(iconX, iconY);
+  ctx.arc(iconX, iconY, r, sweepAngle - 0.7, sweepAngle);
+  ctx.closePath();
+  ctx.fill();
+  // 中心点
+  ctx.fillStyle = 'rgba(0,200,255,0.9)';
+  ctx.beginPath();
+  ctx.arc(iconX, iconY, 1.4, 0, TAU);
+  ctx.fill();
+
+  // ── 文字气泡 ──
+  ctx.font = '12px "Microsoft YaHei",sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  const text = '搜索同伴中';
+  const tw = ctx.measureText(text).width;
+  const dotsWidth = 18;       // 三个点 + 间距
+  const gapTextDots = 6;      // 文字和点之间间距
+  const padX = 10;
+  const padY = 12;
+  const bw = tw + gapTextDots + dotsWidth + padX * 2;
+  const bh = padY * 2;
+  const bx2 = bx - 28; // 文字气泡左移，给图标留位置
+
+  ctx.fillStyle = 'rgba(12,12,26,0.92)';
+  ctx.strokeStyle = 'rgba(0,200,255,0.45)';
+  ctx.lineWidth = 1;
+  roundRect(ctx, bx2, by - bh / 2, bw, bh, 10);
+  ctx.fill();
+  ctx.stroke();
+
+  // 文字
+  ctx.fillStyle = 'rgba(175,228,255,0.95)';
+  ctx.fillText(text, bx2 + padX, by);
+
+  // 三个跳动的点（在文字右侧，包含在气泡内）
+  const dotY = by;
+  const dotBaseX = bx2 + padX + tw + gapTextDots + 3;
+  for (let i = 0; i < 3; i++) {
+    const ph = (performance.now() * 0.005 + i * 0.6) % 1;
+    const bounce = Math.sin(ph * Math.PI) * 2;
+    ctx.fillStyle = `rgba(0,200,255,${0.6 + Math.sin(ph * Math.PI) * 0.4})`;
+    ctx.beginPath();
+    ctx.arc(dotBaseX + i * 5, dotY - bounce, 1.5, 0, TAU);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
 
 window.petAPI.onPetSendStart((info) => {
   if (!pet.flyAway) {

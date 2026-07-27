@@ -7,6 +7,21 @@
 </head>
 <body>
   <canvas id="pet"></canvas>
+  <script>
+    // 同步加载统一配置文件（file:// 协议下同步 XHR 可用）
+    (function() {
+      try {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '../game_config.json', false);
+        xhr.send();
+        window.GAME_CONFIG = JSON.parse(xhr.responseText);
+        console.log('[CONFIG] game_config.json loaded');
+      } catch (e) {
+        console.warn('[CONFIG] load failed:', e.message);
+        window.GAME_CONFIG = { characters: {}, shop: { food: [], emotion: [], effect: [] } };
+      }
+    })();
+  </script>
   <script src="characters.js"></script>
   <script src="app.js"></script>
 </body>

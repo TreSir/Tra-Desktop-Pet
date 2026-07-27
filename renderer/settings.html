@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>设置</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%;
+    overflow: hidden;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", "Microsoft YaHei", sans-serif;
+    background: rgba(245, 245, 247, 0.78);
+    backdrop-filter: blur(40px) saturate(1.6);
+    -webkit-backdrop-filter: blur(40px) saturate(1.6);
+    color: #1d1d1f;
+    padding: 0;
+    user-select: none;
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    position: relative;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  /* ── 拖动区 ── */
+  .drag-region {
+    -webkit-app-region: drag;
+    height: 38px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+    position: relative;
+  }
+  .title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #1d1d1f;
+    letter-spacing: -0.01em;
+  }
+  .close-btn {
+    -webkit-app-region: no-drag;
+    position: absolute;
+    right: 14px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s;
+  }
+  .close-btn::before,
+  .close-btn::after {
+    content: '';
+    position: absolute;
+    width: 11px;
+    height: 1.2px;
+    background: #86868b;
+    border-radius: 1px;
+    transition: background 0.15s;
+  }
+  .close-btn::before { transform: rotate(45deg); }
+  .close-btn::after { transform: rotate(-45deg); }
+  .close-btn:hover { background: rgba(0, 0, 0, 0.06); }
+  .close-btn:hover::before,
+  .close-btn:hover::after { background: #1d1d1f; }
+
+  /* ── 内容 ── */
+  .content {
+    padding: 20px 20px 28px;
+    overflow-y: auto;
+    height: calc(100% - 38px);
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* IE10+ */
+  }
+  .content::-webkit-scrollbar {
+    display: none; /* Chrome/Safari/Electron */
+    width: 0;
+    height: 0;
+  }
+
+  .group {
+    margin-bottom: 18px;
+  }
+  .group:last-child { margin-bottom: 0; }
+
+  .group-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: #6e6e73;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 6px;
+    padding-left: 14px;
+  }
+
+  .card {
+    background: rgba(255, 255, 255, 0.6);
+    border-radius: 10px;
+    overflow: hidden;
+    border: 0.5px solid rgba(0, 0, 0, 0.08);
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 11px 14px;
+    border-bottom: 0.5px solid rgba(0, 0, 0, 0.06);
+    transition: background 0.12s;
+  }
+  .row:last-child { border-bottom: none; }
+  .row:hover { background: rgba(0, 0, 0, 0.03); }
+
+  .label-block { flex: 1; padding-right: 12px; min-width: 0; }
+  .label {
+    color: #1d1d1f;
+    font-size: 13px;
+    font-weight: 400;
+  }
+  .hint {
+    color: #86868b;
+    font-size: 11px;
+    margin-top: 2px;
+  }
+
+  .control {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    justify-content: flex-end;
+    -webkit-app-region: no-drag;
+  }
+
+  /* ── 滑块（macOS 风格）── */
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 130px;
+    height: 4px;
+    background: rgba(0, 0, 0, 0.12);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    background: #fff;
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.15);
+    transition: transform 0.1s;
+  }
+  input[type="range"]::-webkit-slider-thumb:hover {
+    transform: scale(1.08);
+  }
+  input[type="range"]::-webkit-slider-thumb:active {
+    transform: scale(1.15);
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    background: #fff;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.15);
+  }
+
+  .value-badge {
+    min-width: 36px;
+    text-align: right;
+    color: #6e6e73;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    font-weight: 500;
+  }
+
+  /* ── 开关（iOS toggle）── */
+  .toggle {
+    position: relative;
+    width: 38px;
+    height: 22px;
+    background: rgba(120, 120, 128, 0.32);
+    border-radius: 11px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .toggle.on { background: #34c759; }
+  .toggle::after {
+    content: '';
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    background: #fff;
+    border-radius: 50%;
+    top: 2px;
+    left: 2px;
+    transition: transform 0.2s ease;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+  }
+  .toggle.on::after {
+    transform: translateX(16px);
+  }
+
+  /* ── footer ── */
+  .footer {
+    margin-top: 14px;
+    text-align: center;
+    font-size: 10px;
+    color: #86868b;
+    letter-spacing: 0.02em;
+  }
+</style>
+</head>
+<body>
+
+<div class="drag-region">
+  <button class="close-btn" id="closeBtn"></button>
+  <div class="title">设置</div>
+</div>
+
+<div class="content">
+  <div class="group">
+    <div class="group-title">移动</div>
+    <div class="card">
+      <div class="row">
+        <div class="label-block">
+          <div class="label">自动行走速度</div>
+          <div class="hint">宠物自由散步的速度</div>
+        </div>
+        <div class="control">
+          <input type="range" id="walkSpeed" min="10" max="80" step="2">
+          <span class="value-badge" id="walkSpeedVal">28</span>
+        </div>
+      </div>
+      <div class="row">
+        <div class="label-block">
+          <div class="label">寻食速度</div>
+          <div class="hint">宠物走向食物的速度</div>
+        </div>
+        <div class="control">
+          <input type="range" id="foodSeekSpeed" min="80" max="800" step="20">
+          <span class="value-badge" id="foodSeekSpeedVal">320</span>
+        </div>
+      </div>
+      <div class="row">
+        <div class="label-block">
+          <div class="label">进食距离</div>
+          <div class="hint">距离食物多近开始吃</div>
+        </div>
+        <div class="control">
+          <input type="range" id="foodEatDist" min="20" max="100" step="5">
+          <span class="value-badge" id="foodEatDistVal">45</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="group">
+    <div class="group-title">状态</div>
+    <div class="card">
+      <div class="row">
+        <div class="label-block">
+          <div class="label">能量衰减</div>
+          <div class="hint">数值越高，宠物越容易累</div>
+        </div>
+        <div class="control">
+          <input type="range" id="energyDecay" min="0.1" max="2.0" step="0.1">
+          <span class="value-badge" id="energyDecayVal">0.3</span>
+        </div>
+      </div>
+      <div class="row">
+        <div class="label-block">
+          <div class="label">睡眠恢复</div>
+          <div class="hint">睡觉时能量恢复速度</div>
+        </div>
+        <div class="control">
+          <input type="range" id="energyRecover" min="0.5" max="10" step="0.5">
+          <span class="value-badge" id="energyRecoverVal">2.0</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="group">
+    <div class="group-title">交互</div>
+    <div class="card">
+      <div class="row">
+        <div class="label-block">
+          <div class="label">眼球追踪</div>
+          <div class="hint">眼睛跟随鼠标移动</div>
+        </div>
+        <div class="control">
+          <div class="toggle on" id="eyeTrack" data-key="eyeTrack"></div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="label-block">
+          <div class="label">眨眼</div>
+          <div class="hint">自动眨眼动画</div>
+        </div>
+        <div class="control">
+          <div class="toggle on" id="blink" data-key="blink"></div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="label-block">
+          <div class="label">粒子特效</div>
+          <div class="hint">星光/脚印等装饰效果</div>
+        </div>
+        <div class="control">
+          <div class="toggle on" id="particles" data-key="particles"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">设置自动保存 · 关闭即应用</div>
+</div>
+
+<script>
+'use strict';
+
+const ranges = ['walkSpeed', 'foodSeekSpeed', 'foodEatDist', 'energyDecay', 'energyRecover'];
+const toggles = ['eyeTrack', 'blink', 'particles'];
+
+const DEFAULTS = {
+  walkSpeed: 28,
+  foodSeekSpeed: 320,
+  foodEatDist: 45,
+  energyDecay: 0.3,
+  energyRecover: 2.0,
+};
+
+function formatVal(key, v) {
+  if (key === 'energyDecay' || key === 'energyRecover') return v.toFixed(1);
+  return String(v);
+}
+
+async function init() {
+  const settings = await window.settingsAPI.getAll();
+  console.log('[SETTINGS] loaded:', settings);
+
+  for (const id of ranges) {
+    const el = document.getElementById(id);
+    const valEl = document.getElementById(id + 'Val');
+    const v = settings[id] != null ? settings[id] : DEFAULTS[id];
+    el.value = v;
+    valEl.textContent = formatVal(id, v);
+    el.addEventListener('input', () => {
+      const val = parseFloat(el.value);
+      valEl.textContent = formatVal(id, val);
+      window.settingsAPI.set(id, val);
+    });
+  }
+
+  for (const key of toggles) {
+    const el = document.getElementById(key);
+    const v = settings[key] != null ? settings[key] : true;
+    if (!v) el.classList.remove('on');
+    el.addEventListener('click', () => {
+      el.classList.toggle('on');
+      window.settingsAPI.set(key, el.classList.contains('on'));
+    });
+  }
+
+  document.getElementById('closeBtn').addEventListener('click', () => {
+    window.settingsAPI.close();
+  });
+}
+
+init();
+</script>
+</body>
+</html>

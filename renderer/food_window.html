@@ -36,18 +36,10 @@ function draw() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   const now = Date.now();
   drawCount++;
-  if (now - lastLogTime > 2000) {
-    console.log(`[FOOD-WIN] draw frame=${drawCount}, foods=${foods.length}, canvas=${canvas.width}x${canvas.height}`);
+  if (now - lastLogTime > 5000) {
+    console.log(`[FOOD-WIN] draw frame=${drawCount}, foods=${foods.length}`);
     lastLogTime = now;
   }
-
-  // 调试：画一个红色圆确认窗口可见
-  ctx.save();
-  ctx.fillStyle = 'rgba(255,0,0,0.5)';
-  ctx.beginPath();
-  ctx.arc(100, 100, 30, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
   for (let i = 0; i < foods.length; i++) {
     const f = foods[i];
     const bob = Math.sin(now * 0.005 + i * 0.7) * 4;

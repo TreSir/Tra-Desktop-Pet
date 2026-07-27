@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>商店</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%;
+    overflow: hidden;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", "Microsoft YaHei", sans-serif;
+    background: rgba(245, 245, 247, 0.78);
+    backdrop-filter: blur(40px) saturate(1.6);
+    -webkit-backdrop-filter: blur(40px) saturate(1.6);
+    color: #1d1d1f;
+    padding: 0;
+    user-select: none;
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    position: relative;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  /* ── 拖动区 ── */
+  .drag-region {
+    -webkit-app-region: drag;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+    position: relative;
+  }
+  .title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #1d1d1f;
+    letter-spacing: -0.01em;
+  }
+  .balance-pill {
+    -webkit-app-region: no-drag;
+    position: absolute;
+    left: 14px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: rgba(255, 200, 60, 0.18);
+    color: #b8860b;
+    padding: 4px 10px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    border: 0.5px solid rgba(184, 134, 11, 0.18);
+  }
+  .close-btn {
+    -webkit-app-region: no-drag;
+    position: absolute;
+    right: 14px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s;
+  }
+  .close-btn::before,
+  .close-btn::after {
+    content: '';
+    position: absolute;
+    width: 11px;
+    height: 1.2px;
+    background: #86868b;
+    border-radius: 1px;
+    transition: background 0.15s;
+  }
+  .close-btn::before { transform: rotate(45deg); }
+  .close-btn::after { transform: rotate(-45deg); }
+  .close-btn:hover { background: rgba(0, 0, 0, 0.06); }
+  .close-btn:hover::before,
+  .close-btn:hover::after { background: #1d1d1f; }
+
+  /* ── 内容 ── */
+  .content {
+    padding: 16px 16px 24px;
+    overflow-y: auto;
+    height: calc(100% - 44px);
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .content::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+
+  .group { margin-bottom: 20px; }
+  .group:last-child { margin-bottom: 0; }
+
+  .group-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: #6e6e73;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 8px;
+    padding-left: 4px;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  .group-hint {
+    font-size: 10px;
+    color: #a1a1a6;
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+
+  /* ── 商品网格 ── */
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .card {
+    background: rgba(255, 255, 255, 0.7);
+    border-radius: 12px;
+    padding: 12px 12px 10px;
+    border: 0.5px solid rgba(0, 0, 0, 0.06);
+    transition: transform 0.15s, box-shadow 0.15s;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    overflow: hidden;
+  }
+  .card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+  }
+  .card.owned {
+    background: rgba(240, 240, 245, 0.5);
+  }
+
+  .card-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+  .card-icon {
+    font-size: 22px;
+    line-height: 1;
+  }
+  .card-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: #1d1d1f;
+    flex: 1;
+    min-width: 0;
+  }
+  .card-desc {
+    font-size: 10.5px;
+    color: #86868b;
+    line-height: 1.35;
+    margin-bottom: 8px;
+    min-height: 28px;
+  }
+  .card-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    margin-top: auto;
+  }
+  .price {
+    font-size: 12px;
+    color: #b8860b;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+  .price.unaffordable {
+    color: #c7c7cc;
+  }
+
+  /* ── 购买/状态按钮 ── */
+  .btn {
+    -webkit-app-region: no-drag;
+    border: none;
+    border-radius: 10px;
+    padding: 5px 12px;
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.1s, opacity 0.15s;
+    font-family: inherit;
+    min-width: 56px;
+  }
+  .btn:active { transform: scale(0.96); }
+  .btn-buy {
+    background: #007aff;
+    color: #fff;
+  }
+  .btn-buy:hover { background: #0066d6; }
+  .btn-buy:disabled {
+    background: #d1d1d6;
+    color: #fff;
+    cursor: not-allowed;
+  }
+  .btn-owned {
+    background: transparent;
+    color: #34c759;
+    cursor: default;
+    font-weight: 600;
+  }
+  .btn-toggle {
+    background: rgba(120, 120, 128, 0.12);
+    color: #1d1d1f;
+    position: relative;
+    padding-left: 22px;
+  }
+  .btn-toggle::before {
+    content: '';
+    position: absolute;
+    left: 7px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #c7c7cc;
+    transition: background 0.15s;
+  }
+  .btn-toggle.on {
+    background: rgba(52, 199, 89, 0.14);
+    color: #34c759;
+  }
+  .btn-toggle.on::before {
+    background: #34c759;
+  }
+
+  /* ── Toast ── */
+  .toast {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%) translateY(20px);
+    background: rgba(28, 28, 30, 0.92);
+    color: #fff;
+    padding: 8px 16px;
+    border-radius: 16px;
+    font-size: 12px;
+    opacity: 0;
+    transition: opacity 0.25s, transform 0.25s;
+    pointer-events: none;
+    z-index: 100;
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+    max-width: 80%;
+    text-align: center;
+  }
+  .toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+
+  /* ── footer ── */
+  .footer {
+    margin-top: 16px;
+    text-align: center;
+    font-size: 10px;
+    color: #86868b;
+    letter-spacing: 0.02em;
+  }
+</style>
+</head>
+<body>
+
+<div class="drag-region">
+  <div class="balance-pill">🪙 <span id="balanceText">0</span></div>
+  <div class="title">羁绊商店</div>
+  <button class="close-btn" id="closeBtn"></button>
+</div>
+
+<div class="content">
+  <div id="foodGroup" class="group">
+    <div class="group-title">
+      <span>食物</span>
+      <span class="group-hint">购买后立即放到桌面</span>
+    </div>
+    <div class="grid" id="foodGrid"></div>
+  </div>
+
+  <div id="emotionGroup" class="group">
+    <div class="group-title">
+      <span>表情</span>
+      <span class="group-hint">永久解锁 · 托盘菜单切换</span>
+    </div>
+    <div class="grid" id="emotionGrid"></div>
+  </div>
+
+  <div id="effectGroup" class="group">
+    <div class="group-title">
+      <span>特效</span>
+      <span class="group-hint">永久解锁 · 可开关</span>
+    </div>
+    <div class="grid" id="effectGrid"></div>
+  </div>
+
+  <div class="footer">羁绊币：接触宠物时获得 · 商店购买后即时生效</div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+
+let state = null;
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => t.classList.remove('show'), 1800);
+}
+
+function createCard(item, category, owned, effectOn) {
+  const card = document.createElement('div');
+  card.className = 'card' + (owned ? ' owned' : '');
+  card.dataset.id = item.id;
+
+  const foot = document.createElement('div');
+  foot.className = 'card-foot';
+
+  // 价格
+  const price = document.createElement('div');
+  price.className = 'price' + (state.coins < item.price && !owned ? ' unaffordable' : '');
+  price.textContent = `🪙 ${item.price}`;
+
+  // 按钮：依据类别与状态
+  const btn = document.createElement('button');
+  btn.className = 'btn';
+
+  if (category === 'food') {
+    btn.className += ' btn-buy';
+    btn.textContent = '购买';
+    btn.disabled = state.coins < item.price;
+    btn.addEventListener('click', () => handleBuy(item, category));
+  } else if (category === 'emotion') {
+    if (owned) {
+      btn.className += ' btn-owned';
+      btn.textContent = '已解锁';
+      btn.disabled = true;
+    } else {
+      btn.className += ' btn-buy';
+      btn.textContent = '解锁';
+      btn.disabled = state.coins < item.price;
+      btn.addEventListener('click', () => handleBuy(item, category));
+    }
+  } else if (category === 'effect') {
+    if (owned) {
+      btn.className += ' btn-toggle' + (effectOn ? ' on' : '');
+      btn.textContent = effectOn ? '已启用' : '已停用';
+      btn.addEventListener('click', () => handleToggle(item));
+    } else {
+      btn.className += ' btn-buy';
+      btn.textContent = '解锁';
+      btn.disabled = state.coins < item.price;
+      btn.addEventListener('click', () => handleBuy(item, category));
+    }
+  }
+
+  foot.appendChild(price);
+  foot.appendChild(btn);
+
+  card.innerHTML = `
+    <div class="card-head">
+      <div class="card-icon">${item.icon}</div>
+      <div class="card-name">${item.name}</div>
+    </div>
+    <div class="card-desc">${item.desc}</div>
+  `;
+  card.appendChild(foot);
+  return card;
+}
+
+function render() {
+  document.getElementById('balanceText').textContent = state.coins;
+
+  for (const cat of ['food', 'emotion', 'effect']) {
+    const grid = document.getElementById(cat + 'Grid');
+    grid.innerHTML = '';
+    for (const item of state.catalog[cat]) {
+      const owned = state.unlocked.includes(item.id);
+      const on = state.effectsOn.includes(item.id);
+      grid.appendChild(createCard(item, cat, owned, on));
+    }
+  }
+}
+
+async function handleBuy(item, category) {
+  const res = await window.shopAPI.buy(item.id);
+  if (!res.ok) {
+    const reasons = {
+      insufficient: '羁绊币不足',
+      already_owned: '已经解锁',
+      not_found: '商品不存在',
+    };
+    showToast(reasons[res.reason] || '购买失败');
+    return;
+  }
+  // 刷新状态
+  state.coins = res.coins;
+  // 表情/特效：购买后加入已解锁
+  if (category !== 'food') {
+    if (!state.unlocked.includes(item.id)) state.unlocked.push(item.id);
+    if (category === 'effect' && !state.effectsOn.includes(item.id)) {
+      state.effectsOn.push(item.id);
+    }
+  }
+  render();
+  if (category === 'food') {
+    showToast(`已购买 ${item.icon} ${item.name}，放到桌面啦~`);
+  } else {
+    showToast(`已解锁 ${item.icon} ${item.name}！`);
+  }
+}
+
+async function handleToggle(item) {
+  const res = await window.shopAPI.toggleEffect(item.id);
+  if (!res.ok) return;
+  state.effectsOn = res.effectsOn;
+  render();
+}
+
+async function init() {
+  state = await window.shopAPI.getState();
+  console.log('[SHOP] state:', state);
+  render();
+
+  // 余额变化监听（主进程推送）
+  window.shopAPI.onCoinsUpdate((balance) => {
+    state.coins = balance;
+    document.getElementById('balanceText').textContent = balance;
+    // 重新计算按钮可用性
+    for (const cat of ['food', 'emotion', 'effect']) {
+      for (const item of state.catalog[cat]) {
+        const card = document.querySelector(`.card[data-id="${item.id}"]`);
+        if (!card) continue;
+        const owned = state.unlocked.includes(item.id);
+        if (owned) continue;
+        const btn = card.querySelector('.btn-buy');
+        if (btn) btn.disabled = state.coins < item.price;
+        const price = card.querySelector('.price');
+        if (price) price.classList.toggle('unaffordable', state.coins < item.price);
+      }
+    }
+  });
+
+  document.getElementById('closeBtn').addEventListener('click', () => {
+    window.shopAPI.close();
+  });
+}
+
+init();
+</script>
+</body>
+</html>

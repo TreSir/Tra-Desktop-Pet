@@ -4,6 +4,16 @@ const fs = require('fs');
 const { spawn } = require('child_process');
 const LanManager = require('./lan.js');
 
+// ── 加载统一配置文件 ──
+let GAME_CONFIG = { characters: {}, shop: { food: [], emotion: [], effect: [] } };
+try {
+  const configPath = path.join(__dirname, 'game_config.json');
+  GAME_CONFIG = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+  console.log('[CONFIG] Loaded game_config.json');
+} catch (e) {
+  console.warn('[CONFIG] Failed to load game_config.json:', e.message);
+}
+
 // ── 食物放置模式 ──
 let foodModeEnabled = false;       // 默认关闭
 const foods = [];                  // [{id, screenX, screenY, placeTime, type}]
@@ -151,16 +161,360 @@ function toggleFoodMode(enable) {
   }
 }
 
-// ── 角色定义（主进程副本，用于托盘菜单）──
-const CHARACTER_OPTIONS = [
-  { key: 'slime',  name: '史莱姆', icon: '🟦' },
-  { key: 'cat',    name: '小猫',   icon: '🐱' },
-  { key: 'ghost',  name: '幽灵',   icon: '👻' },
-  { key: 'flame',  name: '火焰',   icon: '🔥' },
-  { key: 'robot',  name: '机器人', icon: '🤖' },
-  { key: 'kunkun', name: '坤坤',   icon: '🐔' },
-  { key: 'tree',  name: '小树',   icon: '🌳' },
-];
+// ── 设置系统 ──
+let settingsWindow = null;
+const settingsPath = path.join(app.getPath('userData'), 'settings.json');
+// 默认设置
+const DEFAULT_SETTINGS = {
+  walkSpeed: 28,
+  foodSeekSpeed: 320,
+  foodEatDist: 45,
+  energyDecay: 0.3,
+  energyRecover: 2.0,
+  eyeTrack: true,
+  blink: true,
+  particles: true,
+};
+let settings = { ...DEFAULT_SETTINGS };
+
+// ── 羁绊币系统（接触宠物获得，可兑换交互）──
+const coinsPath = path.join(app.getPath('userData'), 'coins.json');
+let coins = 0;
+function loadCoins() {
+  try {
+    if (fs.existsSync(coinsPath)) {
+      const data = JSON.parse(fs.readFileSync(coinsPath, 'utf-8'));
+      coins = Math.max(0, data.coins | 0);
+    }
+  } catch (e) {
+    console.warn('[COINS] Load failed:', e.message);
+  }
+  console.log(`[COINS] Loaded: ${coins}`);
+}
+function saveCoins() {
+  try {
+    fs.writeFileSync(coinsPath, JSON.stringify({ coins }, null, 2));
+  } catch (e) {
+    console.warn('[COINS] Save failed:', e.message);
+  }
+}
+
+function loadSettings() {
+  try {
+    if (fs.existsSync(settingsPath)) {
+      const data = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+      settings = { ...DEFAULT_SETTINGS, ...data };
+    }
+  } catch (e) {
+    console.warn('[SETTINGS] Load failed:', e.message);
+  }
+  console.log('[SETTINGS] Loaded:', settings);
+}
+
+function saveSettings() {
+  try {
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+  } catch (e) {
+    console.warn('[SETTINGS] Save failed:', e.message);
+  }
+}
+
+function createSettingsWindow() {
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.show();
+    settingsWindow.focus();
+    return;
+  }
+  settingsWindow = new BrowserWindow({
+    width: 380,
+    height: 560,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    hasShadow: true,
+    roundedCorners: true,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: path.join(__dirname, 'settings_preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  settingsWindow.loadFile('renderer/settings.html');
+  settingsWindow.on('closed', () => { settingsWindow = null; });
+  settingsWindow.webContents.on('console-message', (_e, level, message) => {
+    console.log(`[SETTINGS-WIN] ${message}`);
+  });
+}
+
+// ── 设置 IPC ──
+ipcMain.handle('settings-get-all', () => settings);
+
+ipcMain.on('settings-set', (_e, { key, value }) => {
+  if (key in DEFAULT_SETTINGS) {
+    const oldVal = settings[key];
+    settings[key] = value;
+    saveSettings();
+    // 推送给桌宠渲染进程实时应用
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('settings-changed', { key, value });
+    }
+    console.log(`[SETTINGS] ${key}: ${oldVal} -> ${value}`);
+  }
+});
+
+ipcMain.on('settings-close', () => {
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.close();
+  }
+});
+
+// ── 羁绊币 IPC ──
+// 更新托盘菜单中显示的余额
+function refreshCoinsMenuItem() {
+  if (!tray) return;
+  const menu = trayMenuCache && trayMenuCache.__menu;
+  // 直接重建菜单最简单可靠
+  cachedMenu = null;
+  if (tray.popUpContextMenu) {
+    // 仅更新菜单项 label（无需重新弹出）
+  }
+}
+
+// 渲染进程上报获得金币
+ipcMain.on('coins-add', (_e, amount) => {
+  const n = Math.max(0, amount | 0);
+  if (n <= 0) return;
+  coins += n;
+  saveCoins();
+  // 推送给渲染进程更新显示
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('coins-update', coins);
+  }
+  // 清空菜单缓存，下次打开托盘时显示新余额
+  cachedMenu = null;
+  menuCacheKey = '';
+  console.log(`[COINS] +${n} → ${coins}`);
+});
+
+// 渲染进程查询余额
+ipcMain.handle('coins-get', () => coins);
+
+// 渲染进程消费金币（返回 {ok, coins}）
+ipcMain.handle('coins-spend', (_e, amount) => {
+  const n = Math.max(0, amount | 0);
+  if (n <= 0) return { ok: false, coins, reason: 'invalid' };
+  if (coins < n) return { ok: false, coins, reason: 'insufficient' };
+  coins -= n;
+  saveCoins();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('coins-update', coins);
+  }
+  cachedMenu = null;
+  menuCacheKey = '';
+  console.log(`[COINS] -${n} → ${coins}`);
+  return { ok: true, coins };
+});
+
+// ═══════════════════════════════════════════════
+// 商店系统
+// ═══════════════════════════════════════════════
+// 商品目录从 game_config.json 加载（food=消耗品 / emotion=永久解锁表情 / effect=永久解锁特效）
+const SHOP_CATALOG = GAME_CONFIG.shop || { food: [], emotion: [], effect: [] };
+
+// 已解锁商品（emotion/effect 永久；food 不存于此）
+const shopUnlockPath = path.join(app.getPath('userData'), 'shop_unlocks.json');
+// 已启用的特效 id 列表（用户可开关）
+const shopEffectEnabledPath = path.join(app.getPath('userData'), 'shop_effects_on.json');
+let unlockedItems = new Set();   // ['love','rainbow',...]
+let enabledEffects = new Set();  // ['hearts','stardust',...]
+
+function loadShopUnlocks() {
+  try {
+    if (fs.existsSync(shopUnlockPath)) {
+      const data = JSON.parse(fs.readFileSync(shopUnlockPath, 'utf-8'));
+      if (Array.isArray(data.items)) unlockedItems = new Set(data.items);
+      if (Array.isArray(data.effectsOn)) enabledEffects = new Set(data.effectsOn);
+    }
+  } catch (e) { console.warn('[SHOP] Load failed:', e.message); }
+  console.log(`[SHOP] Unlocked: ${[...unlockedItems].join(',') || '(none)'}`);
+  console.log(`[SHOP] Effects on: ${[...enabledEffects].join(',') || '(none)'}`);
+}
+
+function saveShopUnlocks() {
+  try {
+    fs.writeFileSync(shopUnlockPath, JSON.stringify({
+      items: [...unlockedItems],
+      effectsOn: [...enabledEffects],
+    }, null, 2));
+  } catch (e) { console.warn('[SHOP] Save failed:', e.message); }
+}
+
+// 判断是否已解锁
+function isUnlocked(itemId) { return unlockedItems.has(itemId); }
+// 判断特效是否启用
+function isEffectOn(itemId) { return enabledEffects.has(itemId); }
+
+// 商店窗口
+let shopWindow = null;
+function createShopWindow() {
+  if (shopWindow && !shopWindow.isDestroyed()) {
+    shopWindow.show();
+    shopWindow.focus();
+    return;
+  }
+  shopWindow = new BrowserWindow({
+    width: 460,
+    height: 620,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    hasShadow: true,
+    roundedCorners: true,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: path.join(__dirname, 'shop_preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  shopWindow.loadFile('renderer/shop.html');
+  shopWindow.on('closed', () => { shopWindow = null; });
+  shopWindow.webContents.on('console-message', (_e, level, message) => {
+    console.log(`[SHOP-WIN] ${message}`);
+  });
+}
+
+// ── 商店 IPC ──
+// 获取商品目录 + 当前余额 + 解锁状态 + 特效启用状态
+ipcMain.handle('shop-get-state', () => {
+  return {
+    catalog: SHOP_CATALOG,
+    coins,
+    unlocked: [...unlockedItems],
+    effectsOn: [...enabledEffects],
+  };
+});
+
+// 购买商品
+// 食物：扣币后立即在桌宠附近放一份食物（采用宠物当前位置）
+// 表情/特效：扣币后加入解锁列表（特效默认启用）
+ipcMain.handle('shop-buy', (_e, itemId) => {
+  // 查找商品及其类别
+  let found = null;
+  let category = null;
+  for (const [cat, list] of Object.entries(SHOP_CATALOG)) {
+    found = list.find(it => it.id === itemId);
+    if (found) { category = cat; break; }
+  }
+  if (!found) return { ok: false, reason: 'not_found' };
+
+  // 食物：消耗品，每次购买都放一份
+  if (category === 'food') {
+    if (coins < found.price) return { ok: false, coins, reason: 'insufficient' };
+    coins -= found.price;
+    saveCoins();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('coins-update', coins);
+    }
+    cachedMenu = null; menuCacheKey = '';
+
+    const emojiMap = { apple:'🍎', candy:'🍬', meat:'🍖', fish:'🐟', cake:'🍰' };
+    const emoji = emojiMap[found.id] || '🍎';
+    let placed = false;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      const [wx, wy] = mainWindow.getPosition();
+      const sx = wx + 210 + 80;
+      const sy = wy + 100;
+      foods.push({
+        id: ++foodIdCounter,
+        screenX: sx, screenY: sy,
+        placeTime: Date.now(),
+        type: emoji,
+      });
+      // 若食物窗口未创建则创建一次
+      createFoodWindow();
+      if (foodWindow && !foodWindow.isDestroyed()) {
+        foodWindow.show();
+        foodWindow.moveTop();
+      }
+      sendFoodsToRenderer();
+      placed = true;
+    }
+    console.log(`[SHOP] Bought food ${itemId} for ${found.price}, coins=${coins}, placed=${placed}`);
+    return { ok: true, coins, placed };
+  }
+
+  // 表情/特效：永久解锁，购买一次后不能再买
+  if (unlockedItems.has(itemId)) return { ok: false, reason: 'already_owned' };
+  if (coins < found.price) return { ok: false, coins, reason: 'insufficient' };
+
+  coins -= found.price;
+  saveCoins();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('coins-update', coins);
+  }
+  cachedMenu = null; menuCacheKey = '';
+
+  unlockedItems.add(itemId);
+  if (category === 'effect') enabledEffects.add(itemId);
+  saveShopUnlocks();
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('shop-unlocks-changed', {
+      unlocked: [...unlockedItems],
+      effectsOn: [...enabledEffects],
+    });
+  }
+
+  console.log(`[SHOP] Bought ${category} ${itemId} for ${found.price}, coins=${coins}`);
+  return { ok: true, coins, placed: false };
+});
+
+// 切换特效启用状态（仅对已解锁的特效有效）
+ipcMain.handle('shop-toggle-effect', (_e, itemId) => {
+  if (!unlockedItems.has(itemId)) return { ok: false, reason: 'not_unlocked' };
+  if (enabledEffects.has(itemId)) enabledEffects.delete(itemId);
+  else enabledEffects.add(itemId);
+  saveShopUnlocks();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('shop-unlocks-changed', {
+      unlocked: [...unlockedItems],
+      effectsOn: [...enabledEffects],
+    });
+  }
+  console.log(`[SHOP] Effect ${itemId} ${enabledEffects.has(itemId) ? 'ON' : 'OFF'}`);
+  return { ok: true, effectsOn: [...enabledEffects] };
+});
+
+// 触发表情切换（已解锁表情才能用，由托盘菜单调用）
+function tryEmotion(emoKey) {
+  if (!unlockedItems.has(emoKey) && !['happy','angry','sad','disdain','shocked','scared','relaxed'].includes(emoKey)) {
+    // 未解锁且非默认表情
+    return false;
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('emotion-change', emoKey);
+  }
+  return true;
+}
+
+ipcMain.on('shop-close', () => {
+  if (shopWindow && !shopWindow.isDestroyed()) {
+    shopWindow.close();
+  }
+});
+
+// ── 角色定义（从 game_config.json 加载，用于托盘菜单）──
+const CHARACTER_OPTIONS = Object.entries(GAME_CONFIG.characters || {}).map(([key, c]) => ({
+  key,
+  name: c.name,
+  icon: c.icon,
+}));
 
 // ── 角色持久化 ──
 // 把 userData 重定向到项目目录下，避免沙盒限制访问 AppData
@@ -212,10 +566,10 @@ function createWindow() {
   const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
 
   mainWindow = new BrowserWindow({
-    width: 280,
-    height: 340,
-    x: Math.floor((sw - 280) / 2),
-    y: sh - 400,
+    width: 420,
+    height: 460,
+    x: Math.floor((sw - 420) / 2),
+    y: sh - 500,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
@@ -333,12 +687,17 @@ function buildMenu() {
       }))
     },
     {
-      label: '点击穿透',
+      label: '点击穿透 (智能)',
       type: 'checkbox',
-      checked: clickThrough,
+      checked: true,
       click: (item) => {
+        // 智能穿透：勾选时由渲染进程根据宠物范围动态切换；取消时全程可点击
         clickThrough = item.checked;
-        mainWindow.setIgnoreMouseEvents(clickThrough, { forward: true });
+        if (clickThrough) {
+          mainWindow.setIgnoreMouseEvents(true, { forward: true });
+        } else {
+          mainWindow.setIgnoreMouseEvents(false);
+        }
       }
     },
     {
@@ -355,6 +714,18 @@ function buildMenu() {
       type: 'checkbox',
       checked: foodModeEnabled,
       click: (item) => toggleFoodMode(item.checked)
+    },
+    {
+      label: `🪙 羁绊币：${coins}`,
+      enabled: false,  // 仅展示，不可点击
+    },
+    {
+      label: '🛒 商店...',
+      click: () => createShopWindow()
+    },
+    {
+      label: '⚙ 设置...',
+      click: () => createSettingsWindow()
     },
     { type: 'separator' },
     // ── 联机模式开关 ──
@@ -374,7 +745,7 @@ function buildMenu() {
         label: '召回桌宠',
         click: () => {
           const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
-          mainWindow.setPosition(Math.floor((sw - 280) / 2), sh - 400);
+          mainWindow.setPosition(Math.floor((sw - 420) / 2), sh - 500);
           mainWindow.webContents.send('pet-recall');
         }
       }
@@ -387,7 +758,7 @@ function buildMenu() {
       label: '回到屏幕底部',
       click: () => {
         const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
-        mainWindow.setPosition(Math.floor((sw - 280) / 2), sh - 400);
+        mainWindow.setPosition(Math.floor((sw - 420) / 2), sh - 500);
       }
     },
     { type: 'separator' },
@@ -436,7 +807,7 @@ async function sendPetToPeer(peer) {
     mainWindow.webContents.send('pet-send-fail', { error: e.message });
     // 窗口可能在屏幕外（边缘抛出场景），拉回屏幕中央底部
     const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
-    mainWindow.setPosition(Math.floor((sw - 280) / 2), sh - 400);
+    mainWindow.setPosition(Math.floor((sw - 420) / 2), sh - 500);
   }
 }
 
@@ -459,13 +830,29 @@ function createTray(iconDataUrl) {
 }
 
 // ── IPC: 窗口移动 ──
+// 当前 zoom（由渲染进程同步，用于计算光圈可贴边的范围）
+let petZoom = 1.0;
+const CANVAS_CX = 210;  // canvas 中心 x（与 CFG.cx 一致）
+const CANVAS_CY = 230;  // canvas 中心 y（与 CFG.cy 一致）
+const AURA_FACTOR = 1.5; // 光圈半径 = r * 1.5
+
+ipcMain.on('sync-zoom', (_e, zoom) => {
+  petZoom = Math.max(0.5, Math.min(2.0, zoom));
+});
+
 ipcMain.on('move-window', (_e, dx, dy) => {
   if (!mainWindow) return;
   const [x, y] = mainWindow.getPosition();
   const [w, h] = mainWindow.getSize();
   const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
-  const nx = Math.round(Math.max(-60, Math.min(sw - w + 60, x + dx)));
-  const ny = Math.round(Math.max(-40, Math.min(sh - h + 40, y + dy)));
+  // 光圈半径（屏幕坐标）：r * zoom * 1.5
+  const auraR = 60 * petZoom * AURA_FACTOR;
+  // 让光圈能贴到屏幕边缘：窗口可移出屏幕，移出量 = canvas 中心到边的距离 - 光圈半径
+  const marginX = CANVAS_CX - auraR;  // 左右各可移出这么多
+  const marginYTop = CANVAS_CY - auraR; // 上
+  const marginYBottom = h - CANVAS_CY - auraR; // 下
+  const nx = Math.round(Math.max(-marginX, Math.min(sw - w + marginX, x + dx)));
+  const ny = Math.round(Math.max(-marginYTop, Math.min(sh - h + marginYBottom, y + dy)));
   mainWindow.setPosition(nx, ny);
 });
 
@@ -514,8 +901,9 @@ ipcMain.on('physics-drop', (_e, vx, vy) => {
     let nx = x + Math.round(velX);
     let ny = y + Math.round(velY);
 
-    // 地面弹跳
-    const floorY = sh - h + 40;
+    // 地面弹跳（按光圈半径计算，让光圈贴地）
+    const auraR = 60 * petZoom * AURA_FACTOR;
+    const floorY = sh - h + (h - CANVAS_CY) - auraR;
 
     // ── 联机模式：边缘飞出检测 ──
     if (lanEnabled) {
@@ -535,7 +923,7 @@ ipcMain.on('physics-drop', (_e, vx, vy) => {
         const peers = lan.getPeers();
         if (peers.length === 0) {
           // 联机开启但无在线 peer：弹回
-          mainWindow.setPosition(Math.floor((sw - 280) / 2), sh - 400);
+          mainWindow.setPosition(Math.floor((sw - 420) / 2), sh - 500);
           mainWindow.webContents.send('pet-edge-bounce-back');
         } else {
           // 选择最活跃的 peer（lan.getPeers 内部已按发现时间排序，取最新一个）
@@ -563,9 +951,10 @@ ipcMain.on('physics-drop', (_e, vx, vy) => {
         velX *= 0.8;
       }
     }
-    // 左右墙（正常弹跳，不飞出）
-    if (nx < -60) { nx = -60; velX = -velX * bounce; }
-    if (nx > sw - w + 60) { nx = sw - w + 60; velX = -velX * bounce; }
+    // 左右墙（按光圈半径计算，让光圈贴边弹跳）
+    const marginX = CANVAS_CX - auraR;
+    if (nx < -marginX) { nx = -marginX; velX = -velX * bounce; }
+    if (nx > sw - w + marginX) { nx = sw - w + marginX; velX = -velX * bounce; }
 
     mainWindow.setPosition(nx, ny);
 
@@ -580,6 +969,14 @@ ipcMain.on('physics-drop', (_e, vx, vy) => {
 
 ipcMain.on('physics-cancel', () => {
   if (physicsTimer) { clearInterval(physicsTimer); physicsTimer = null; }
+});
+
+// 点击穿透切换：true=窗口穿透到桌面，false=窗口可点击
+// forward:true 让穿透状态下 mousemove 仍转发给渲染进程
+ipcMain.on('set-click-through', (_e, through) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setIgnoreMouseEvents(!!through, { forward: !!through });
+  }
 });
 
 ipcMain.on('set-tray-icon', (_e, dataUrl) => {
@@ -651,6 +1048,9 @@ function writeHeartbeat() {
 
 app.whenReady().then(() => {
   loadCharacter();  // 加载已保存的角色
+  loadSettings();  // 加载设置
+  loadCoins();     // 加载羁绊币
+  loadShopUnlocks();  // 加载商店解锁状态
   createWindow();
   createTray();
   writeHeartbeat();

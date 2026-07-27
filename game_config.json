@@ -1,0 +1,90 @@
+{
+  "_comment": "数字共生体桌宠 · 统一数值配置文件 · 修改后重启应用生效",
+
+  "coins": {
+    "enabled": true,
+    "cooldownMs": 80,
+    "rewards": {
+      "pet":      1,
+      "combo3":   3,
+      "combo5":   8,
+      "catch":    20,
+      "drag":     2
+    }
+  },
+
+  "characters": {
+    "slime": {
+      "name": "史莱姆",
+      "icon": "🟦",
+      "glowColor": [0, 200, 255],
+      "particleHue": 178,
+      "spriteSrc": "assets/slime.jpg"
+    },
+    "cat": {
+      "name": "小猫",
+      "icon": "🐱",
+      "glowColor": [255, 180, 100],
+      "particleHue": 35,
+      "spriteSrc": "assets/cat.jpg"
+    },
+    "ghost": {
+      "name": "幽灵",
+      "icon": "👻",
+      "glowColor": [180, 220, 255],
+      "particleHue": 200,
+      "spriteSrc": "assets/ghost.jpg"
+    },
+    "flame": {
+      "name": "火焰",
+      "icon": "🔥",
+      "glowColor": [255, 140, 40],
+      "particleHue": 20,
+      "spriteSrc": "assets/flame.jpg"
+    },
+    "robot": {
+      "name": "机器人",
+      "icon": "🤖",
+      "glowColor": [100, 255, 150],
+      "particleHue": 140,
+      "spriteSrc": "assets/robot.jpg"
+    },
+    "kunkun": {
+      "name": "坤坤",
+      "icon": "🐔",
+      "glowColor": [200, 200, 255],
+      "particleHue": 260,
+      "spriteSrc": "assets/kunkun.jpg",
+      "isHumanoid": true
+    },
+    "tree": {
+      "name": "小树",
+      "icon": "🌳",
+      "glowColor": [80, 200, 100],
+      "particleHue": 120,
+      "spriteSrc": "assets/tree.jpg"
+    }
+  },
+
+  "shop": {
+    "food": [
+      { "id": "apple",  "name": "苹果",  "icon": "🍎", "price": 5,  "desc": "心情+10, 能量+5",  "effect": { "mood": 10, "energy": 5  } },
+      { "id": "candy",  "name": "糖果",  "icon": "🍬", "price": 10, "desc": "心情+15",         "effect": { "mood": 15, "energy": 0  } },
+      { "id": "meat",   "name": "肉块",  "icon": "🍖", "price": 15, "desc": "能量+25",         "effect": { "mood": 0,  "energy": 25 } },
+      { "id": "fish",   "name": "鱼肉",  "icon": "🐟", "price": 20, "desc": "能量+15, 心情+10", "effect": { "mood": 10, "energy": 15 } },
+      { "id": "cake",   "name": "蛋糕",  "icon": "🍰", "price": 25, "desc": "心情+25",         "effect": { "mood": 25, "energy": 0  } }
+    ],
+    "emotion": [
+      { "id": "proud",    "name": "得意",   "icon": "😏", "price": 50, "desc": "哼哼~ 解锁得意表情" },
+      { "id": "dizzy",    "name": "晕眩",   "icon": "💫", "price": 60, "desc": "解锁晕眩表情" },
+      { "id": "badsmile", "name": "邪笑",   "icon": "😬", "price": 70, "desc": "解锁坏笑表情" },
+      { "id": "love",     "name": "爱心眼", "icon": "♥",  "price": 80, "desc": "解锁爱心眼表情" }
+    ],
+    "effect": [
+      { "id": "hearts",    "name": "心形粒子", "icon": "💗", "price": 120, "desc": "周围环绕飘升的心形" },
+      { "id": "stardust",  "name": "星尘环绕", "icon": "✨", "price": 150, "desc": "金色星尘不断生成" },
+      { "id": "lightning", "name": "闪电拖尾", "icon": "⚡", "price": 180, "desc": "移动时拖出电光" },
+      { "id": "rainbow",   "name": "彩虹光环", "icon": "🌈", "price": 200, "desc": "光环变为彩虹色" }
+    ]
+  }
+}
