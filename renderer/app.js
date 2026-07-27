@@ -1,0 +1,2610 @@
+'use strict';
+
+// ═══════════════════════════════════════════════
+// 数字共生体桌宠 v5 — 终极进化版
+// 有机触手 | 次表面散射 | 分层辉光 | 粒子对象池
+// 弹簧物理 | 眼球追踪 | 抛掷物理 | 待机环顾
+// 情绪系统 | 能量系统 | 睡眠模式 | 连击系统
+// 心形粒子 | 汗滴 | 星尘 | 残影 | 屏震 | 随机事件
+// 滚轮缩放 | 长按挣扎 | 边缘窥探 | 光环系统
+// ═══════════════════════════════════════════════
+
+// ─── 可调参数 ───
+const CFG = {
+  W: 280, H: 340,
+  cx: 140, cy: 205, r: 52,
+  walkSpeed: 28,
+  eyeTrackK: 0.38,
+  dragThrowMin: 2,
+};
+
+// ─── Canvas 初始化 ───
+const canvas = document.getElementById('pet');
+const ctx = canvas.getContext('2d', { alpha: true });
+const DPR = Math.min(window.devicePixelRatio || 1, 2);
+canvas.width = CFG.W * DPR;
+canvas.height = CFG.H * DPR;
+canvas.style.width = CFG.W + 'px';
+canvas.style.height = CFG.H + 'px';
+ctx.scale(DPR, DPR);
+
+// ─── 数学工具 ───
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const TAU = Math.PI * 2;
+const easeOut = (t) => 1 - (1 - t) * (1 - t);
+const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+const easeInOut = (t) => t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
+const easeInExpo = (t) => t === 0 ? 0 : Math.pow(2, 10 * t - 10);
+
+function pnoise(x) {
+  return Math.sin(x * 1.0) * 0.5 + Math.sin(x * 2.3 + 1.3) * 0.3 + Math.sin(x * 4.7 + 2.1) * 0.2;
+}
+
+// ═══════════════════════════════════════════════
+// 表情参数
+// ═══════════════════════════════════════════════
+const EMOTIONS = {
+  happy:    { eye:'crescent',  mouth:'smile_teeth',  curve:0.9,  teeth:1, tint:[0,0,0],      tension:0.55, glow:1.3, rate:2.2, eyeS:1.0 },
+  angry:    { eye:'angry',     mouth:'frown_teeth',  curve:-0.8, teeth:1, tint:[45,-18,-22], tension:1.0,  glow:1.6, rate:2.8, eyeS:0.95 },
+  sad:      { eye:'droop',     mouth:'frown',        curve:-0.6, teeth:0, tint:[-12,-6,25],  tension:0.1,  glow:0.7, rate:0.6, eyeS:0.9 },
+  disdain:  { eye:'half_lid',  mouth:'smirk',        curve:0.15, teeth:0, tint:[0,0,0],      tension:0.4,  glow:1.0, rate:0.8, eyeS:0.9 },
+  badsmile: { eye:'gleam',     mouth:'grin_teeth',   curve:0.85, teeth:1, tint:[12,6,-12],   tension:0.7,  glow:1.5, rate:2.0, eyeS:0.85 },
+  shocked:  { eye:'circle',    mouth:'o_open',       curve:0,    teeth:0, tint:[22,12,12],   tension:0.95, glow:1.6, rate:3.5, eyeS:1.35 },
+  scared:   { eye:'dot',       mouth:'wavy',         curve:0,    teeth:0, tint:[-6,-6,18],   tension:0.25, glow:1.2, rate:2.2, eyeS:0.6 },
+  relaxed:  { eye:'curve_down',mouth:'soft_smile',   curve:0.3,  teeth:0, tint:[-6,0,6],     tension:0.3,  glow:0.85,rate:0.9, eyeS:1.0 },
+  proud:    { eye:'confident', mouth:'smirk_teeth',  curve:0.4,  teeth:1, tint:[6,0,-6],     tension:0.65, glow:1.2, rate:1.6, eyeS:0.95 },
+  sleepy:   { eye:'curve_down',mouth:'soft_smile',   curve:0.15, teeth:0, tint:[-8,-4,10],   tension:0.15, glow:0.5, rate:0.3, eyeS:0.7 },
+  dizzy:    { eye:'circle',    mouth:'wavy',         curve:0,    teeth:0, tint:[20,10,-10],  tension:0.3,  glow:1.1, rate:1.5, eyeS:0.8 },
+  love:     { eye:'heart',     mouth:'smile_teeth',  curve:0.95, teeth:1, tint:[30,-5,-15],  tension:0.5,  glow:1.8, rate:3.0, eyeS:1.1 },
+};
+
+const STATUS_MAP = { idle:'relaxed', working:'proud', waiting:'disdain', success:'happy', error:'shocked', thinking:'relaxed' };
+const STATUS_TEXT = { idle:'待机中…', working:'工作中…', waiting:'等你确认', success:'完成啦！', error:'出错了…', thinking:'思考中…' };
+const EMOTION_TEXT = { happy:'高兴~', angry:'哼！', sad:'呜呜…', disdain:'切', badsmile:'嘿嘿', shocked:'？！', scared:'啊！', relaxed:'~', proud:'哼哼', sleepy:'Zzz…', dizzy:'晕…', love:'♥' };
+
+// 心情→表情映射
+const MOOD_EMOTIONS = {
+  90: 'love', 75: 'happy', 60: 'proud', 45: 'relaxed',
+  30: 'disdain', 15: 'sad', 0: 'angry',
+};
+
+// ═══════════════════════════════════════════════
+// 宠物状态
+// ═══════════════════════════════════════════════
+const pet = {
+  emotion: 'relaxed',
+  targetEmotion: 'relaxed',
+  params: { ...EMOTIONS.relaxed, tint:[...EMOTIONS.relaxed.tint] },
+
+  // ── 角色系统 ──
+  character: 'slime',  // 当前角色：slime/cat/ghost/flame/robot
+
+  // 物理
+  bobY: 0, walkOffset: 0,
+  squashX: 1, squashY: 1,
+  squashVX: 0, squashVY: 0,
+  tilt: 0, tiltV: 0,
+
+  // 眨眼
+  blinkT: 0, blinkPhase: 0, blinkTimer: 3,
+
+  // 行走
+  walking: true, walkDir: 1, walkTimer: 3, idleTimer: 10,
+  walkAccum: 0,
+  lookAround: 0, lookDir: 0, lookTimer: 5,
+
+  // 拖拽
+  dragging: false,
+  dragVelX: 0, dragVelY: 0,
+  dragHist: [],
+  falling: false,
+
+  // 鼠标
+  hovering: false,
+  mouseRX: 0, mouseRY: 0,
+  _rawMouseX: 0, _rawMouseY: 0,
+
+  // 气泡
+  bubbleText: '', bubbleTimer: 0,
+
+  // 抚摸
+  petCount: 0, petTimer: 0,
+
+  // ── 情绪/能量系统 ──
+  mood: 60,          // 0-100, 影响表情和光环颜色
+  energy: 80,        // 0-100, 低能量时想睡觉
+  sleeping: false,
+  sleepTimer: 30,    // 30秒无交互后入睡
+
+  // ── 连击系统 ──
+  combo: 0,
+  comboTimer: 0,
+  comboShake: 0,
+
+  // ── 屏震 ──
+  shakeIntensity: 0,
+  shakeX: 0, shakeY: 0,
+
+  // ── 残影 ──
+  trail: [],
+  trailTimer: 0,
+
+  // ── 旋转（三连击）──
+  spin: 0,
+
+  // ── 长按 ──
+  longPress: 0,
+  struggling: false,
+
+  // ── 缩放 ──
+  zoom: 1,
+  zoomTarget: 1,
+
+  // ── 边缘窥探 ──
+  peeking: false,
+  peekDir: 0,
+
+  // ── 随机事件 ──
+  eventTimer: 15,
+  sneezing: false,
+  hiccuping: false,
+
+  // ── 效果粒子 ──
+  hearts: [],
+  sweatDrops: [],
+  zzz: [],
+  cracks: [],
+  sparkles: [],
+  stars: [],
+  drips: [],           // 修复：补上缺失的 drips
+  notes: [],            // 音符粒子
+  footprints: [],       // 脚印
+  shockwaves: [],       // 冲击波环
+  thoughts: [],         // 思考气泡图标
+  blush: 0,             // 脸红程度 0-1
+
+  // ── 联机状态 ──
+  hidden: false,
+  flyAway: null,
+  dropIn: null,
+  teleportGlow: 0,
+
+  // ── 光环 ──
+  auraPhase: 0,
+
+  // ── 日夜系统 ──
+  hour: new Date().getHours(),
+  isNight: false,
+  dayNightCheck: 60,
+
+  // ── 进化系统 ──
+  totalPets: 0,         // 累计点击次数
+  totalDrags: 0,        // 累计拖拽次数
+  evolutionLevel: 0,    // 0=普通, 1=闪耀, 2=彩虹, 3=传说
+  evoGlow: 0,           // 进化光环强度
+
+  // ── 舞蹈模式 ──
+  dancing: false,
+  danceTimer: 0,
+  dancePhase: 0,
+
+  // ── 进食 ──
+  eating: false,
+  eatTimer: 0,
+
+  // ── 磁力吸引 ──
+  magnetPull: 0,
+
+  // ── 思考 ──
+  thinkTimer: 8,
+  currentThought: null,
+
+  // ── 边缘窥探 ──
+  edgePeek: 0,
+  edgePeekDir: 0,
+};
+
+// ─── 颜色辅助 ───
+function tinted(base, tint, a) {
+  return `rgba(${clamp(base[0]+tint[0],0,255)|0},${clamp(base[1]+tint[1],0,255)|0},${clamp(base[2]+tint[2],0,255)|0},${a})`;
+}
+
+// 心情→光环颜色
+function moodColor(mood) {
+  if (mood > 75) return [255, 80, 140];   // 粉色 - 开心
+  if (mood > 55) return [0, 200, 255];    // 青色 - 正常
+  if (mood > 30) return [180, 180, 100];  // 黄绿 - 无聊
+  if (mood > 15) return [100, 130, 200];  // 蓝灰 - 难过
+  return [255, 80, 60];                    // 红色 - 愤怒
+}
+
+// ═══════════════════════════════════════════════
+// 通用粒子池（freeIndex 栈优化，避免 O(N) 线性扫描）
+// ═══════════════════════════════════════════════
+const PARTICLE_POOL_SIZE = 150;
+const particlePool = [];
+const particleFreeStack = [];  // 空闲槽位索引栈
+for (let i = 0; i < PARTICLE_POOL_SIZE; i++) {
+  particlePool.push({ active: false, x:0, y:0, vx:0, vy:0, size:0, life:0, decay:0, hue:0 });
+  particleFreeStack.push(i);  // 初始全部空闲
+}
+
+function spawnParticle() {
+  if (particleFreeStack.length === 0) return;  // 池满
+  const idx = particleFreeStack.pop();
+  const p = particlePool[idx];
+  const a = Math.random() * TAU;
+  const r = CFG.r * (0.5 + Math.random() * 0.55);
+  p.active = true;
+  p.x = CFG.cx + Math.cos(a) * r;
+  p.y = CFG.cy + Math.sin(a) * r * 0.85;
+  p.vx = (Math.random() - 0.5) * 0.6;
+  p.vy = -0.3 - Math.random() * 0.8;
+  p.size = 0.6 + Math.random() * 2.2;
+  p.life = 1;
+  p.decay = 0.005 + Math.random() * 0.013;
+  p.hue = 178 + Math.random() * 34;
+  p._idx = idx;  // 记住索引便于回收
+}
+
+function updateParticles(dt, rate) {
+  if (Math.random() < rate * dt * 0.7) spawnParticle();
+  for (let i = 0; i < particlePool.length; i++) {
+    const p = particlePool[i];
+    if (!p.active) continue;
+    p.x += p.vx; p.y += p.vy;
+    p.vy -= 0.007; p.vx *= 0.99;
+    p.life -= p.decay;
+    if (p.life <= 0) {
+      p.active = false;
+      particleFreeStack.push(i);  // 回收到栈
+    }
+  }
+}
+
+function drawParticles(ctx) {
+  for (let i = 0; i < particlePool.length; i++) {
+    const p = particlePool[i];
+    if (!p.active) continue;
+    const a = p.life * 0.8;
+    const h = p.hue | 0;
+    ctx.fillStyle = `hsla(${h},100%,55%,${a * 0.06})`;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.size * 5, 0, TAU); ctx.fill();
+    ctx.fillStyle = `hsla(${h},100%,65%,${a * 0.15})`;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.size * 2.8, 0, TAU); ctx.fill();
+    ctx.fillStyle = `hsla(${h},100%,82%,${a})`;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, TAU); ctx.fill();
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 心形粒子
+// ═══════════════════════════════════════════════
+function spawnHeart() {
+  pet.hearts.push({
+    x: CFG.cx + (Math.random() - 0.5) * 40,
+    y: CFG.cy - 20,
+    vx: (Math.random() - 0.5) * 1.5,
+    vy: -1.5 - Math.random() * 1,
+    size: 6 + Math.random() * 5,
+    life: 1,
+    rot: (Math.random() - 0.5) * 0.5,
+  });
+}
+
+function updateHearts(dt) {
+  for (let i = pet.hearts.length - 1; i >= 0; i--) {
+    const h = pet.hearts[i];
+    h.x += h.vx; h.y += h.vy;
+    h.vy *= 0.97; h.vx *= 0.98;
+    h.life -= dt * 0.8;
+    h.rot += dt * 2;
+    if (h.life <= 0) pet.hearts.splice(i, 1);
+  }
+}
+
+function drawHeart(ctx, x, y, size, alpha, rot) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rot);
+  ctx.scale(size / 10, size / 10);
+  ctx.globalAlpha = alpha;
+  // 心形路径
+  ctx.beginPath();
+  ctx.moveTo(0, 3);
+  ctx.bezierCurveTo(-5, -3, -10, 0, 0, 8);
+  ctx.bezierCurveTo(10, 0, 5, -3, 0, 3);
+  ctx.closePath();
+  // 辉光
+  ctx.shadowColor = 'rgba(255,100,160,0.8)';
+  ctx.shadowBlur = 8;
+  ctx.fillStyle = 'rgba(255,80,140,0.9)';
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawHearts(ctx) {
+  for (const h of pet.hearts) {
+    drawHeart(ctx, h.x, h.y, h.size, h.life * 0.9, h.rot);
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 汗滴
+// ═══════════════════════════════════════════════
+function spawnSweat() {
+  pet.sweatDrops.push({
+    x: CFG.cx + 30 + Math.random() * 10,
+    y: CFG.cy - 30,
+    vy: 0.5,
+    size: 3 + Math.random() * 2,
+    life: 1,
+  });
+}
+
+function updateSweat(dt) {
+  for (let i = pet.sweatDrops.length - 1; i >= 0; i--) {
+    const s = pet.sweatDrops[i];
+    s.vy += 0.15;
+    s.y += s.vy;
+    s.life -= dt * 0.6;
+    if (s.life <= 0 || s.y > CFG.cy + 60) pet.sweatDrops.splice(i, 1);
+  }
+}
+
+function drawSweat(ctx) {
+  for (const s of pet.sweatDrops) {
+    ctx.fillStyle = `rgba(120,200,255,${s.life * 0.15})`;
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.size * 2, 0, TAU); ctx.fill();
+    ctx.fillStyle = `rgba(150,220,255,${s.life * 0.85})`;
+    ctx.beginPath();
+    ctx.ellipse(s.x, s.y, s.size * 0.6, s.size, 0, 0, TAU);
+    ctx.fill();
+  }
+}
+
+// ═══════════════════════════════════════════════
+// Zzz 睡眠粒子
+// ═══════════════════════════════════════════════
+function spawnZzz() {
+  pet.zzz.push({
+    x: CFG.cx + 25,
+    y: CFG.cy - 40,
+    vx: 0.3,
+    vy: -0.8,
+    size: 10 + Math.random() * 6,
+    life: 1,
+    wobble: 0,
+  });
+}
+
+function updateZzz(dt) {
+  for (let i = pet.zzz.length - 1; i >= 0; i--) {
+    const z = pet.zzz[i];
+    z.wobble += dt * 3;
+    z.x += z.vx + Math.sin(z.wobble) * 0.5;
+    z.y += z.vy;
+    z.vy *= 0.99;
+    z.life -= dt * 0.4;
+    if (z.life <= 0) pet.zzz.splice(i, 1);
+  }
+}
+
+function drawZzz(ctx) {
+  for (const z of pet.zzz) {
+    ctx.save();
+    ctx.globalAlpha = z.life * 0.7;
+    ctx.font = `bold ${z.size}px "Microsoft YaHei",sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.shadowColor = 'rgba(0,200,255,0.5)';
+    ctx.shadowBlur = 6;
+    ctx.fillStyle = 'rgba(180,230,255,0.9)';
+    ctx.fillText('Z', z.x, z.y);
+    ctx.restore();
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 冲击裂缝粒子
+// ═══════════════════════════════════════════════
+function spawnCracks(x, y, count, intensity) {
+  for (let i = 0; i < count; i++) {
+    const ang = Math.random() * TAU;
+    const speed = 2 + Math.random() * 5 * intensity;
+    pet.cracks.push({
+      x: x, y: y,
+      vx: Math.cos(ang) * speed,
+      vy: Math.sin(ang) * speed - 1,
+      size: 2 + Math.random() * 4,
+      life: 1,
+      rot: ang,
+    });
+  }
+}
+
+function updateCracks(dt) {
+  for (let i = pet.cracks.length - 1; i >= 0; i--) {
+    const c = pet.cracks[i];
+    c.vy += 0.3;
+    c.x += c.vx; c.y += c.vy;
+    c.vx *= 0.95;
+    c.life -= dt * 1.5;
+    if (c.life <= 0) pet.cracks.splice(i, 1);
+  }
+}
+
+function drawCracks(ctx) {
+  for (const c of pet.cracks) {
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    ctx.rotate(c.rot);
+    ctx.globalAlpha = c.life;
+    ctx.fillStyle = `rgba(0,220,255,${c.life * 0.3})`;
+    ctx.beginPath();
+    ctx.arc(0, 0, c.size * 2, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = `rgba(150,240,255,${c.life})`;
+    ctx.fillRect(-c.size * 0.5, -c.size * 0.2, c.size, c.size * 0.4);
+    ctx.restore();
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 星尘闪烁（开心/兴奋时）
+// ═══════════════════════════════════════════════
+function spawnSparkle(x, y) {
+  pet.sparkles.push({
+    x: x || CFG.cx + (Math.random() - 0.5) * 80,
+    y: y || CFG.cy + (Math.random() - 0.5) * 60,
+    life: 1,
+    size: 3 + Math.random() * 5,
+    rot: Math.random() * TAU,
+  });
+}
+
+function updateSparkles(dt) {
+  for (let i = pet.sparkles.length - 1; i >= 0; i--) {
+    const s = pet.sparkles[i];
+    s.life -= dt * 1.2;
+    s.rot += dt * 4;
+    if (s.life <= 0) pet.sparkles.splice(i, 1);
+  }
+}
+
+function drawSparkles(ctx) {
+  for (const s of pet.sparkles) {
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    ctx.rotate(s.rot);
+    ctx.globalAlpha = s.life;
+    const sz = s.size * s.life;
+    // 四角星
+    ctx.fillStyle = `rgba(255,240,180,${s.life * 0.9})`;
+    ctx.shadowColor = 'rgba(255,220,100,0.8)';
+    ctx.shadowBlur = 6;
+    ctx.beginPath();
+    ctx.moveTo(0, -sz);
+    ctx.lineTo(sz * 0.3, -sz * 0.3);
+    ctx.lineTo(sz, 0);
+    ctx.lineTo(sz * 0.3, sz * 0.3);
+    ctx.lineTo(0, sz);
+    ctx.lineTo(-sz * 0.3, sz * 0.3);
+    ctx.lineTo(-sz, 0);
+    ctx.lineTo(-sz * 0.3, -sz * 0.3);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 音符粒子（开心时飘出）
+// ═══════════════════════════════════════════════
+const NOTE_SYMBOLS = ['♪', '♫', '♬', '♩', '♭'];
+function spawnNote() {
+  pet.notes.push({
+    x: CFG.cx + (Math.random() - 0.5) * 30,
+    y: CFG.cy - 30,
+    vx: (Math.random() - 0.5) * 0.8,
+    vy: -1.2 - Math.random() * 0.6,
+    size: 12 + Math.random() * 8,
+    life: 1,
+    rot: (Math.random() - 0.5) * 0.4,
+    sym: NOTE_SYMBOLS[(Math.random() * NOTE_SYMBOLS.length) | 0],
+    hue: 280 + Math.random() * 80,
+  });
+}
+
+function updateNotes(dt) {
+  for (let i = pet.notes.length - 1; i >= 0; i--) {
+    const n = pet.notes[i];
+    n.x += n.vx + Math.sin(n.life * 8) * 0.3;
+    n.y += n.vy;
+    n.vy *= 0.99;
+    n.life -= dt * 0.5;
+    if (n.life <= 0) pet.notes.splice(i, 1);
+  }
+}
+
+function drawNotes(ctx) {
+  for (const n of pet.notes) {
+    ctx.save();
+    ctx.globalAlpha = n.life * 0.85;
+    ctx.font = `bold ${n.size}px serif`;
+    ctx.textAlign = 'center';
+    ctx.translate(n.x, n.y);
+    ctx.rotate(n.rot);
+    ctx.shadowColor = `hsla(${n.hue},80%,60%,0.6)`;
+    ctx.shadowBlur = 6;
+    ctx.fillStyle = `hsla(${n.hue},80%,70%,${n.life})`;
+    ctx.fillText(n.sym, 0, 0);
+    ctx.restore();
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 脚印（行走时留下）
+// ═══════════════════════════════════════════════
+function spawnFootprint() {
+  pet.footprints.push({
+    x: CFG.cx + (Math.random() - 0.5) * 10,
+    y: CFG.cy + 45 + Math.random() * 5,
+    life: 1,
+    size: 4 + Math.random() * 2,
+  });
+}
+
+function updateFootprints(dt) {
+  for (let i = pet.footprints.length - 1; i >= 0; i--) {
+    const f = pet.footprints[i];
+    f.life -= dt * 0.6;
+    if (f.life <= 0) pet.footprints.splice(i, 1);
+  }
+}
+
+function drawFootprints(ctx) {
+  for (const f of pet.footprints) {
+    ctx.fillStyle = `rgba(0,180,255,${f.life * 0.2})`;
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, f.size * (2 - f.life), 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = `rgba(120,220,255,${f.life * 0.4})`;
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, f.size * 0.6, 0, TAU);
+    ctx.fill();
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 冲击波环（着陆/重击时）
+// ═══════════════════════════════════════════════
+function spawnShockwave(x, y, intensity) {
+  pet.shockwaves.push({
+    x, y, r: 5, maxR: 40 + intensity * 20, life: 1, intensity,
+  });
+}
+
+function updateShockwaves(dt) {
+  for (let i = pet.shockwaves.length - 1; i >= 0; i--) {
+    const s = pet.shockwaves[i];
+    s.r += dt * 120;
+    s.life -= dt * 2;
+    if (s.life <= 0 || s.r > s.maxR) pet.shockwaves.splice(i, 1);
+  }
+}
+
+function drawShockwaves(ctx) {
+  for (const s of pet.shockwaves) {
+    ctx.strokeStyle = `rgba(0,220,255,${s.life * 0.5})`;
+    ctx.lineWidth = 2 * s.life;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, TAU);
+    ctx.stroke();
+    ctx.strokeStyle = `rgba(150,240,255,${s.life * 0.3})`;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r * 0.7, 0, TAU);
+    ctx.stroke();
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 思考气泡（待机时随机想法）
+// ═══════════════════════════════════════════════
+const THOUGHT_ICONS = ['💭', '❓', '❗', '💡', '⭐', '🌟', '💤', '🍖', '🎮', '❤️', '🎵', '🌈'];
+const THOUGHT_TEXTS = ['想吃东西…', '好无聊~', '在想什么？', '嘿嘿~', '困了…', '饿了！', '想玩耍！', '你好呀~', '哼哼~', '在发呆…', '想睡觉…', '好开心~', '咦？', '咕咕咕…'];
+
+function spawnThought() {
+  const isIcon = Math.random() < 0.4;
+  pet.currentThought = {
+    type: isIcon ? 'icon' : 'text',
+    content: isIcon
+      ? THOUGHT_ICONS[(Math.random() * THOUGHT_ICONS.length) | 0]
+      : THOUGHT_TEXTS[(Math.random() * THOUGHT_TEXTS.length) | 0],
+    life: 1,
+    t: 0,
+  };
+}
+
+function updateThoughts(dt) {
+  // 睡觉时显示梦境
+  if (pet.sleeping) {
+    pet.thinkTimer -= dt;
+    if (pet.thinkTimer <= 0) {
+      pet.thinkTimer = 5 + Math.random() * 8;
+      if (Math.random() < 0.5) {
+        const dreams = ['🍖', '🍬', '🎮', '⭐', '🌈', '💝', '🎵', '🍰'];
+        pet.currentThought = {
+          type: 'icon',
+          content: dreams[(Math.random() * dreams.length) | 0],
+          life: 0,
+          t: 0,
+        };
+      }
+    }
+    if (pet.currentThought) {
+      pet.currentThought.t += dt;
+      if (pet.currentThought.t < 0.5) {
+        pet.currentThought.life = pet.currentThought.t / 0.5;
+      } else if (pet.currentThought.t > 3) {
+        pet.currentThought.life = Math.max(0, 1 - (pet.currentThought.t - 3) / 0.5);
+      } else {
+        pet.currentThought.life = 1;
+      }
+      if (pet.currentThought.t > 3.5) pet.currentThought = null;
+    }
+    return;
+  }
+
+  if (pet.dragging || pet.falling || pet.dancing || pet.eating) {
+    pet.currentThought = null;
+    return;
+  }
+  pet.thinkTimer -= dt;
+  if (pet.thinkTimer <= 0) {
+    pet.thinkTimer = 10 + Math.random() * 15;
+    if (Math.random() < 0.6) spawnThought();
+  }
+  if (pet.currentThought) {
+    pet.currentThought.t += dt;
+    if (pet.currentThought.t < 0.3) {
+      pet.currentThought.life = pet.currentThought.t / 0.3;
+    } else if (pet.currentThought.t > 2.5) {
+      pet.currentThought.life = Math.max(0, 1 - (pet.currentThought.t - 2.5) / 0.5);
+    } else {
+      pet.currentThought.life = 1;
+    }
+    if (pet.currentThought.t > 3) pet.currentThought = null;
+  }
+}
+
+function drawThoughts(ctx) {
+  if (!pet.currentThought) return;
+  const th = pet.currentThought;
+  const a = th.life;
+  const bx = CFG.cx + 35, by = CFG.cy - 55;
+
+  ctx.save();
+
+  // 小圆点连接
+  ctx.fillStyle = `rgba(12,12,26,${a * 0.8})`;
+  ctx.beginPath(); ctx.arc(bx - 18, by + 8, 2.5, 0, TAU); ctx.fill();
+  ctx.beginPath(); ctx.arc(bx - 12, by + 4, 3.5, 0, TAU); ctx.fill();
+
+  // 气泡
+  ctx.fillStyle = `rgba(12,12,26,${a * 0.9})`;
+  ctx.strokeStyle = `rgba(0,200,255,${a * 0.5})`;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.ellipse(bx, by, 22, 16, 0, 0, TAU);
+  ctx.fill();
+  ctx.stroke();
+
+  // 内容
+  ctx.globalAlpha = a;
+  if (th.type === 'icon') {
+    ctx.font = '16px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(th.content, bx, by);
+  } else {
+    ctx.font = '9px "Microsoft YaHei",sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = `rgba(175,228,255,1)`;
+    ctx.fillText(th.content, bx, by);
+  }
+
+  ctx.restore();
+}
+
+// ═══════════════════════════════════════════════
+// 日夜系统
+// ═══════════════════════════════════════════════
+function updateDayNight(dt) {
+  pet.dayNightCheck -= dt;
+  if (pet.dayNightCheck <= 0) {
+    pet.dayNightCheck = 300; // 每5分钟检查一次
+    pet.hour = new Date().getHours();
+    pet.isNight = pet.hour < 7 || pet.hour >= 22;
+
+    // 夜晚加速入睡
+    if (pet.isNight && !pet.sleeping && !pet.dragging) {
+      pet.sleepTimer = Math.min(pet.sleepTimer, 10);
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 进化系统
+// ═══════════════════════════════════════════════
+function updateEvolution(dt) {
+  const thresholds = [20, 60, 150];
+  let newLevel = 0;
+  for (let i = 0; i < thresholds.length; i++) {
+    if (pet.totalPets + pet.totalDrags >= thresholds[i]) newLevel = i + 1;
+  }
+
+  if (newLevel > pet.evolutionLevel) {
+    pet.evolutionLevel = newLevel;
+    // 进化特效
+    pet.shakeIntensity = 0.5;
+    pet.teleportGlow = 1;
+    for (let i = 0; i < 15; i++) spawnSparkle();
+    const evoNames = ['', '闪耀形态！', '彩虹形态！', '传说形态！'];
+    setEmotion('love', evoNames[newLevel]);
+    pet.mood = 100;
+  }
+
+  // 进化光环插值
+  const targetGlow = pet.evolutionLevel * 0.3;
+  pet.evoGlow = lerp(pet.evoGlow, targetGlow, dt * 2);
+}
+
+// ═══════════════════════════════════════════════
+// 舞蹈模式
+// ═══════════════════════════════════════════════
+function updateDance(dt, t) {
+  if (pet.dancing) {
+    pet.danceTimer -= dt;
+    pet.dancePhase += dt * 6;
+    if (pet.danceTimer <= 0) {
+      pet.dancing = false;
+      setEmotion('happy', '跳完啦~');
+    } else {
+      // 舞蹈动作：左右摇摆 + 弹跳
+      const beat = Math.sin(pet.dancePhase);
+      pet.squashVX += beat * 0.04;
+      pet.squashVY += Math.abs(beat) * -0.03;
+      pet.tiltV += beat * 0.02;
+      pet.bobY += Math.abs(Math.sin(pet.dancePhase * 2)) * 2;
+
+      // 舞蹈时产生音符和星尘
+      if (Math.random() < dt * 4) spawnNote();
+      if (Math.random() < dt * 2) spawnSparkle();
+    }
+  }
+}
+
+function startDance() {
+  if (pet.sleeping) {
+    pet.sleeping = false;
+    setEmotion('shocked', '！');
+    return;
+  }
+  pet.dancing = true;
+  pet.danceTimer = 5;
+  pet.dancePhase = 0;
+  setEmotion('love', '♪一起来跳舞♪');
+  pet.mood = clamp(pet.mood + 10, 0, 100);
+  pet.sleepTimer = 30;
+}
+
+// ═══════════════════════════════════════════════
+// 进食系统
+// ═══════════════════════════════════════════════
+function feedPet() {
+  if (pet.sleeping) {
+    pet.sleeping = false;
+    setEmotion('happy', '好吃的！');
+  }
+  pet.eating = true;
+  pet.eatTimer = 1.5;
+  pet.energy = clamp(pet.energy + 30, 0, 100);
+  pet.mood = clamp(pet.mood + 15, 0, 100);
+  setEmotion('love', '好好吃~');
+  pet.sleepTimer = 30;
+  for (let i = 0; i < 3; i++) spawnHeart();
+
+  // 进食粒子
+  for (let i = 0; i < 8; i++) {
+    const ang = Math.random() * TAU;
+    pet.sparkles.push({
+      x: CFG.cx + Math.cos(ang) * 20,
+      y: CFG.cy + Math.sin(ang) * 20,
+      life: 1,
+      size: 3 + Math.random() * 4,
+      rot: ang,
+    });
+  }
+}
+
+function updateEating(dt) {
+  if (pet.eating) {
+    pet.eatTimer -= dt;
+    // 进食时身体轻微抖动
+    pet.squashVX += (Math.random() - 0.5) * 0.02;
+    pet.squashVY += (Math.random() - 0.5) * 0.02;
+    if (pet.eatTimer <= 0) {
+      pet.eating = false;
+      setEmotion('relaxed', '');
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 食物放置系统
+// 主进程维护食物列表（屏幕坐标），渲染进程缓存并寻路
+// 策略：先放先吃（foods[0] 即目标）
+// ═══════════════════════════════════════════════
+let foods = [];                 // 缓存主进程推送的食物列表
+let windowX = 0, windowY = 0;   // 桌宠窗口在屏幕的坐标（由 cursor-pos 附带推送）
+let foodSeeking = false;        // 是否正在前往食物
+const FOOD_SEEK_SPEED = 320;    // 寻路速度（像素/秒）
+const FOOD_EAT_DIST = 45;       // 到达食物的判定距离
+let foodMoveAccumX = 0, foodMoveAccumY = 0; // 累积移动量，减少 IPC 频率
+
+let foodSeekLogTimer = 0;
+function updateFoodSeeking(dt) {
+  if (foods.length === 0) {
+    if (foodSeeking) {
+      foodSeeking = false;
+      pet.walking = false;
+      pet.walkTimer = 3;
+    }
+    return;
+  }
+  // 拖拽/坠落/睡眠时不寻路
+  if (pet.dragging || pet.falling || pet.sleeping || pet.eating) {
+    foodSeekLogTimer += dt;
+    if (foodSeekLogTimer > 2) {
+      console.log(`[FOOD] skip seeking: dragging=${pet.dragging} falling=${pet.falling} sleeping=${pet.sleeping} eating=${pet.eating}`);
+      foodSeekLogTimer = 0;
+    }
+    return;
+  }
+
+  // 取第一个食物作为目标（先放先吃）
+  const target = foods[0];
+  // 桌宠中心在屏幕的坐标（窗口位置 + canvas 中心偏移）
+  const petCx = windowX + CFG.cx;
+  const petCy = windowY + CFG.cy;
+  const dx = target.screenX - petCx;
+  const dy = target.screenY - petCy;
+  const dist = Math.hypot(dx, dy);
+
+  // 到达食物 → 吃掉
+  if (dist < FOOD_EAT_DIST) {
+    console.log(`[FOOD] Reached target id=${target.id}, eating!`);
+    window.petAPI.eatFood(target.id);
+    foods.shift(); // 本地立即移除，避免重复触发
+    foodSeeking = false;
+    feedPet();      // 触发进食交互
+    return;
+  }
+
+  // 朝目标移动（累积移动量，每帧累积，达到 1 像素才发送 IPC 减少开销）
+  foodSeeking = true;
+  const dirX = dx / dist;
+  const dirY = dy / dist;
+  foodMoveAccumX += dirX * FOOD_SEEK_SPEED * dt;
+  foodMoveAccumY += dirY * FOOD_SEEK_SPEED * dt;
+  // 每帧都发送（move-window 内部会做边界限制）
+  const moveX = foodMoveAccumX;
+  const moveY = foodMoveAccumY;
+  foodMoveAccumX -= moveX;
+  foodMoveAccumY -= moveY;
+  window.petAPI.moveWindow(moveX, moveY);
+  // 同步本地窗口位置（减少画面抖动）
+  windowX += moveX;
+  windowY += moveY;
+
+  // 行走动画
+  pet.walking = true;
+  pet.walkDir = dirX > 0 ? 1 : -1;
+  pet.walkTimer = 1.5; // 持续行走
+
+  foodSeekLogTimer += dt;
+  if (foodSeekLogTimer > 1.5) {
+    console.log(`[FOOD] seeking pet=(${Math.round(petCx)},${Math.round(petCy)}) target=(${target.screenX},${target.screenY}) dist=${Math.round(dist)} dir=(${dirX.toFixed(2)},${dirY.toFixed(2)}) foods=${foods.length}`);
+    foodSeekLogTimer = 0;
+  }
+}
+
+// 食物绘制已移至独立的 food_window（全屏透明窗口，全局可见）
+
+// ═══════════════════════════════════════════════
+// 磁力吸引（鼠标靠近时身体微微倾斜）
+// ═══════════════════════════════════════════════
+function updateMagnet(dt) {
+  if (pet.dragging || pet.falling || pet.sleeping) {
+    pet.magnetPull = lerp(pet.magnetPull, 0, dt * 5);
+    return;
+  }
+  const dist = Math.hypot(pet.mouseRX, pet.mouseRY);
+  if (dist < 80 && pet.hovering) {
+    const pull = (80 - dist) / 80;
+    pet.magnetPull = lerp(pet.magnetPull, pull * 0.15, dt * 8);
+    // 向鼠标方向轻微倾斜
+    pet.tiltV += (pet.mouseRX * 0.001 - pet.tilt) * 0.03;
+  } else {
+    pet.magnetPull = lerp(pet.magnetPull, 0, dt * 5);
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 脸红效果
+// ═══════════════════════════════════════════════
+function updateBlush(dt) {
+  const targetBlush = pet.mood > 80 ? 0.6 : (pet.mood > 60 ? 0.3 : 0);
+  pet.blush = lerp(pet.blush, targetBlush, dt * 3);
+}
+
+function drawBlush(ctx) {
+  if (pet.blush < 0.05) return;
+  const a = pet.blush;
+  const ey = CFG.cy - 5;
+  // 左脸
+  ctx.fillStyle = `rgba(255,120,160,${a * 0.35})`;
+  ctx.beginPath();
+  ctx.ellipse(CFG.cx - 25, ey + 5, 7, 4, 0, 0, TAU);
+  ctx.fill();
+  // 右脸
+  ctx.beginPath();
+  ctx.ellipse(CFG.cx + 25, ey + 5, 7, 4, 0, 0, TAU);
+  ctx.fill();
+}
+
+// ═══════════════════════════════════════════════
+// 滴落效果
+// ═══════════════════════════════════════════════
+function updateDrips() {
+  if (Math.random() < 0.0025 && pet.drips.length < 3) {
+    pet.drips.push({
+      x: CFG.cx + (Math.random() - 0.5) * 42,
+      y: CFG.cy + 36,
+      vy: 0.3,
+      size: 2 + Math.random() * 2.5,
+      life: 1,
+    });
+  }
+  for (let i = pet.drips.length - 1; i >= 0; i--) {
+    const d = pet.drips[i];
+    d.vy += 0.09; d.y += d.vy; d.life -= 0.008;
+    if (d.life <= 0 || d.y > CFG.cy + 85) pet.drips.splice(i, 1);
+  }
+}
+
+function drawDrips(ctx, params) {
+  // 直接使用 pet.drips，避免无意义的模块级别名
+  for (const d of pet.drips) {
+    ctx.fillStyle = `rgba(0,170,255,${d.life * 0.12})`;
+    ctx.beginPath(); ctx.arc(d.x, d.y, d.size * 2.5, 0, TAU); ctx.fill();
+    ctx.fillStyle = tinted([6, 6, 14], params.tint, d.life * 0.9);
+    ctx.beginPath(); ctx.ellipse(d.x, d.y, d.size, d.size * 1.3, 0, 0, TAU); ctx.fill();
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 底部积液
+// ═══════════════════════════════════════════════
+function drawPool(ctx, t, rx, ry, params) {
+  const poolW = rx * 1.5;
+  const poolY = CFG.cy + ry * 0.72;
+  const ripple = Math.sin(t * 0.8) * 2.5 + Math.sin(t * 1.7) * 1.2;
+  ctx.beginPath();
+  ctx.moveTo(CFG.cx - poolW, poolY);
+  ctx.quadraticCurveTo(CFG.cx, poolY + 17 + ripple, CFG.cx + poolW, poolY);
+  ctx.quadraticCurveTo(CFG.cx, poolY + 7, CFG.cx - poolW, poolY);
+  ctx.closePath();
+  const g = ctx.createRadialGradient(CFG.cx, poolY + 4, 3, CFG.cx, poolY + 4, poolW);
+  g.addColorStop(0, tinted([8, 8, 18], params.tint, 0.88));
+  g.addColorStop(0.6, tinted([6, 6, 14], params.tint, 0.4));
+  g.addColorStop(1, tinted([6, 6, 14], params.tint, 0));
+  ctx.fillStyle = g; ctx.fill();
+  ctx.strokeStyle = `rgba(0,200,255,${0.08 * params.glow})`;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(CFG.cx - poolW * 0.85, poolY + 1);
+  ctx.quadraticCurveTo(CFG.cx, poolY + 5, CFG.cx + poolW * 0.85, poolY + 1);
+  ctx.stroke();
+}
+
+// ═══════════════════════════════════════════════
+// 有机触手
+// ═══════════════════════════════════════════════
+const TENTACLES = [
+  { idx: 30, base: -2.4,  len: 38, w: 12, segs: 5 },
+  { idx: 42, base: -0.75, len: 40, w: 12, segs: 5 },
+  { idx: 36, base: -1.57, len: 28, w: 10, segs: 4 },
+  { idx: 6,  base: 0.72,  len: 34, w: 11, segs: 5 },
+  { idx: 18, base: 2.42,  len: 32, w: 11, segs: 5 },
+  { idx: 2,  base: 0.12,  len: 26, w: 9,  segs: 4 },
+];
+
+const tentacleState = TENTACLES.map(() => ({ phase: 0, swayVel: 0 }));
+
+function drawTentacles(ctx, t, pts, params) {
+  const tension = params.tension;
+  const vertShift = (tension - 0.45) * 14;
+  const swayAmp = (1 - tension * 0.5) * 8;
+
+  for (let i = 0; i < TENTACLES.length; i++) {
+    const def = TENTACLES[i];
+    const st = tentacleState[i];
+    const pt = pts[def.idx];
+    const sway = Math.sin(t * 1.2 + i * 1.7) * swayAmp;
+    st.phase = lerp(st.phase, sway * 0.5, 0.08);
+    const secMotion = Math.sin(t * 2.8 + i * 2.3) * 4 + st.phase;
+    const len = def.len * (0.82 + tension * 0.3);
+    const ang = def.base + sway * 0.02;
+
+    const segments = def.segs;
+    const path = [];
+    for (let s = 0; s <= segments; s++) {
+      const f = s / segments;
+      const dist = len * f;
+      const w = def.w * (1 - f * 0.85);
+      const bend = Math.sin(t * 1.5 + i * 2 + f * 3) * (3 + f * 6) + secMotion * f;
+      const px = pt.x + Math.cos(ang) * dist + Math.sin(t * 1.4 + i + f * 2) * bend;
+      const py = pt.y + Math.sin(ang) * dist + Math.cos(t * 1.4 + i + f * 2) * bend + vertShift * f;
+      path.push({ x: px, y: py, w: Math.max(1.5, w) });
+    }
+
+    ctx.beginPath();
+    for (let s = 0; s < path.length; s++) {
+      const p = path[s];
+      const prev = path[Math.max(0, s - 1)];
+      const dx = p.x - prev.x, dy = p.y - prev.y;
+      const dlen = Math.hypot(dx, dy) || 1;
+      const nx = -dy / dlen, ny = dx / dlen;
+      if (s === 0) ctx.moveTo(p.x + nx * p.w * 0.5, p.y + ny * p.w * 0.5);
+      else ctx.lineTo(p.x + nx * p.w * 0.5, p.y + ny * p.w * 0.5);
+    }
+    for (let s = path.length - 1; s >= 0; s--) {
+      const p = path[s];
+      const prev = path[Math.max(0, s - 1)];
+      const dx = p.x - prev.x, dy = p.y - prev.y;
+      const dlen = Math.hypot(dx, dy) || 1;
+      const nx = -dy / dlen, ny = dx / dlen;
+      ctx.lineTo(p.x - nx * p.w * 0.5, p.y - ny * p.w * 0.5);
+    }
+    ctx.closePath();
+
+    const tip = path[path.length - 1];
+    const tg = ctx.createLinearGradient(pt.x, pt.y, tip.x, tip.y);
+    tg.addColorStop(0, tinted([6, 6, 14], params.tint, 0.98));
+    tg.addColorStop(0.7, tinted([10, 10, 22], params.tint, 0.95));
+    tg.addColorStop(1, tinted([16, 20, 36], params.tint, 0.9));
+    ctx.fillStyle = tg; ctx.fill();
+
+    ctx.strokeStyle = `rgba(0,180,255,${0.12 * params.glow})`;
+    ctx.lineWidth = 2.5; ctx.stroke();
+    ctx.strokeStyle = `rgba(0,200,255,${0.3 * params.glow})`;
+    ctx.lineWidth = 1; ctx.stroke();
+
+    const glowR = 6 + Math.sin(t * 3 + i) * 1;
+    ctx.fillStyle = `rgba(0,170,255,${0.06 * params.glow})`;
+    ctx.beginPath(); ctx.arc(tip.x, tip.y, glowR * 2, 0, TAU); ctx.fill();
+    ctx.fillStyle = `rgba(0,200,255,${0.15 * params.glow})`;
+    ctx.beginPath(); ctx.arc(tip.x, tip.y, glowR, 0, TAU); ctx.fill();
+    ctx.fillStyle = `rgba(120,235,255,${0.7 * params.glow})`;
+    ctx.beginPath(); ctx.arc(tip.x, tip.y, 2.5, 0, TAU); ctx.fill();
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 光环系统（心情驱动）
+// ═══════════════════════════════════════════════
+function drawAura(ctx, t, rx, ry) {
+  const [r, g, b] = moodColor(pet.mood);
+  const pulse = 0.5 + Math.sin(t * 1.5 + pet.auraPhase) * 0.3;
+  const auraR = Math.max(rx, ry) * (1.35 + pulse * 0.15);
+
+  // 外层光环
+  const ag = ctx.createRadialGradient(CFG.cx, CFG.cy, rx * 0.9, CFG.cx, CFG.cy, auraR);
+  ag.addColorStop(0, `rgba(${r},${g},${b},0)`);
+  ag.addColorStop(0.7, `rgba(${r},${g},${b},${0.04 * pulse})`);
+  ag.addColorStop(1, `rgba(${r},${g},${b},0)`);
+  ctx.fillStyle = ag;
+  ctx.beginPath();
+  ctx.arc(CFG.cx, CFG.cy, auraR, 0, TAU);
+  ctx.fill();
+
+  // 进化光环（彩虹色旋转）
+  if (pet.evoGlow > 0.01) {
+    const evoR = Math.max(rx, ry) * (1.15 + pulse * 0.1);
+    for (let i = 0; i < 12; i++) {
+      const ang = t * 0.5 + (i / 12) * TAU;
+      const hue = (i / 12) * 360 + t * 30;
+      ctx.strokeStyle = `hsla(${hue},80%,60%,${pet.evoGlow * 0.15 * pulse})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(CFG.cx, CFG.cy, evoR, ang, ang + 0.6);
+      ctx.stroke();
+    }
+    // 进化粒子
+    if (pet.evolutionLevel >= 2 && Math.random() < 0.1) {
+      const ang = Math.random() * TAU;
+      pet.sparkles.push({
+        x: CFG.cx + Math.cos(ang) * evoR * 0.8,
+        y: CFG.cy + Math.sin(ang) * evoR * 0.8,
+        life: 1,
+        size: 2 + Math.random() * 3,
+        rot: ang,
+      });
+    }
+  }
+
+  // 能量低时光环变暗
+  if (pet.energy < 30) {
+    const dim = (30 - pet.energy) / 30;
+    ctx.fillStyle = `rgba(0,0,0,${dim * 0.08})`;
+    ctx.beginPath();
+    ctx.arc(CFG.cx, CFG.cy, auraR, 0, TAU);
+    ctx.fill();
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 身体绘制
+// ═══════════════════════════════════════════════
+// 预计算 46 点的 cos/sin 表（避免每帧重算）
+const BODY_N = 46;
+const BODY_COS = new Float32Array(BODY_N);
+const BODY_SIN = new Float32Array(BODY_N);
+for (let i = 0; i < BODY_N; i++) {
+  const a = (i / BODY_N) * TAU;
+  BODY_COS[i] = Math.cos(a);
+  BODY_SIN[i] = Math.sin(a);
+}
+
+function drawBody(ctx, t, params) {
+  const breath = pet.sleeping
+    ? 1 + Math.sin(t * 0.5) * 0.015  // 睡觉时呼吸更慢
+    : 1 + Math.sin(t * 1.4) * 0.03;
+  const wobble = pet.sleeping ? 2.0 : 3.8 + Math.sin(t * 0.6) * 1.3;
+  const rx = CFG.r * breath * pet.squashX;
+  const ry = CFG.r * breath * pet.squashY;
+
+  const pts = [];
+  for (let i = 0; i < BODY_N; i++) {
+    const a = (i / BODY_N) * TAU;
+    const n = pnoise(a * 1.5 + t * 0.65) * wobble
+            + pnoise(a * 3.2 + t * 1.1) * wobble * 0.35
+            + pnoise(a * 6.1 + t * 0.4) * wobble * 0.12;
+    pts.push({
+      x: CFG.cx + BODY_COS[i] * (rx + n),
+      y: CFG.cy + BODY_SIN[i] * (ry + n) * 0.92
+    });
+  }
+
+  function tracePath() {
+    ctx.beginPath();
+    for (let i = 0; i < BODY_N; i++) {
+      const nx = (i + 1) % BODY_N;
+      const mx = (pts[i].x + pts[nx].x) / 2;
+      const my = (pts[i].y + pts[nx].y) / 2;
+      if (i === 0) ctx.moveTo(mx, my);
+      else ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+    }
+    ctx.closePath();
+  }
+
+  drawPool(ctx, t, rx, ry, params);
+  drawDrips(ctx, params);
+  drawTentacles(ctx, t, pts, params);
+
+  // 1. 外层辉光
+  tracePath();
+  ctx.fillStyle = `rgba(0,160,255,${0.04 * params.glow})`;
+  ctx.fill();
+
+  // 2. 主体填充
+  tracePath();
+  const g = ctx.createRadialGradient(CFG.cx - rx * 0.15, CFG.cy - ry * 0.2, 3, CFG.cx, CFG.cy, ry * 1.4);
+  g.addColorStop(0,    tinted([28, 28, 48], params.tint, 1));
+  g.addColorStop(0.35, tinted([16, 16, 32], params.tint, 1));
+  g.addColorStop(0.65, tinted([8, 8, 18],  params.tint, 1));
+  g.addColorStop(0.88, tinted([4, 4, 10],  params.tint, 1));
+  g.addColorStop(1,    tinted([2, 2, 6],   params.tint, 0.92));
+  ctx.fillStyle = g; ctx.fill();
+
+  // 3. 边缘辉光
+  ctx.strokeStyle = `rgba(0,180,255,${0.10 * params.glow})`; ctx.lineWidth = 5; ctx.stroke();
+  ctx.strokeStyle = `rgba(0,200,255,${0.20 * params.glow})`; ctx.lineWidth = 2.5; ctx.stroke();
+  ctx.strokeStyle = `rgba(80,220,255,${0.4 * params.glow})`; ctx.lineWidth = 1; ctx.stroke();
+
+  // 4. 次表面散射
+  ctx.save();
+  tracePath(); ctx.clip();
+  const sssR = ry * 0.7;
+  const sss = ctx.createRadialGradient(CFG.cx, CFG.cy + 8, 0, CFG.cx, CFG.cy + 8, sssR);
+  const sssPulse = 0.7 + Math.sin(t * 2.2) * 0.2;
+  sss.addColorStop(0,   `rgba(0,190,255,${0.18 * params.glow * sssPulse})`);
+  sss.addColorStop(0.4, `rgba(0,140,220,${0.10 * params.glow * sssPulse})`);
+  sss.addColorStop(0.8, `rgba(0,80,160,${0.03 * params.glow})`);
+  sss.addColorStop(1,   'rgba(0,40,100,0)');
+  ctx.fillStyle = sss;
+  ctx.fillRect(CFG.cx - rx * 1.2, CFG.cy - ry * 1.2, rx * 2.4, ry * 2.4);
+
+  // 5. 内核荧光
+  const corePulse = 0.55 + Math.sin(t * 2.2) * 0.28;
+  const coreR = ry * 0.32 * corePulse;
+  const cg = ctx.createRadialGradient(CFG.cx, CFG.cy + 5, 0, CFG.cx, CFG.cy + 5, coreR);
+  cg.addColorStop(0,   `rgba(80,220,255,${0.28 * params.glow * corePulse})`);
+  cg.addColorStop(0.4, `rgba(0,170,255,${0.15 * params.glow * corePulse})`);
+  cg.addColorStop(1,   'rgba(0,80,160,0)');
+  ctx.fillStyle = cg;
+  ctx.beginPath(); ctx.arc(CFG.cx, CFG.cy + 5, coreR, 0, TAU); ctx.fill();
+  ctx.restore();
+
+  // 6. 湿润高光
+  const hgx = CFG.cx - rx * 0.28, hgy = CFG.cy - ry * 0.38;
+  const hg = ctx.createRadialGradient(hgx, hgy, 0, hgx, hgy, rx * 0.45);
+  hg.addColorStop(0, 'rgba(140,200,255,0.25)');
+  hg.addColorStop(0.5, 'rgba(100,170,240,0.1)');
+  hg.addColorStop(1, 'rgba(100,170,240,0)');
+  ctx.fillStyle = hg;
+  ctx.beginPath();
+  ctx.ellipse(hgx, hgy, rx * 0.38, ry * 0.22, -0.35, 0, TAU);
+  ctx.fill();
+
+  ctx.fillStyle = 'rgba(200,235,255,0.35)';
+  ctx.beginPath();
+  ctx.ellipse(CFG.cx - rx * 0.34, CFG.cy - ry * 0.44, rx * 0.07, ry * 0.04, -0.3, 0, TAU);
+  ctx.fill();
+
+  // 7. Rim Light
+  ctx.save();
+  tracePath(); ctx.clip();
+  const rg = ctx.createRadialGradient(CFG.cx + rx * 0.5, CFG.cy + ry * 0.5, 0, CFG.cx + rx * 0.5, CFG.cy + ry * 0.5, rx * 0.85);
+  rg.addColorStop(0, `rgba(0,160,230,${0.2 * params.glow})`);
+  rg.addColorStop(0.5, `rgba(0,120,200,${0.06 * params.glow})`);
+  rg.addColorStop(1, 'rgba(0,100,180,0)');
+  ctx.fillStyle = rg;
+  ctx.fillRect(CFG.cx - rx, CFG.cy - ry, rx * 2, ry * 2);
+  ctx.restore();
+
+  return { rx, ry };
+}
+
+// ═══════════════════════════════════════════════
+// 眼睛绘制（新增 heart/sleep 变体）
+// ═══════════════════════════════════════════════
+function drawEyes(ctx, t, params) {
+  const ey = CFG.cy - 11;
+  const sp = 17;
+  const sz = 8.5 * params.eyeS;
+  let op = 1 - pet.blinkT;
+
+  // 睡觉时眼睛几乎闭合
+  if (pet.sleeping) op *= 0.05;
+
+  const tx = clamp(pet.mouseRX * CFG.eyeTrackK, -3.5, 3.5);
+  const ty = clamp(pet.mouseRY * CFG.eyeTrackK, -2.5, 2.5);
+
+  // 睡觉时不追踪
+  const etx = pet.sleeping ? 0 : tx;
+  const ety = pet.sleeping ? 0 : ty;
+
+  drawOneEye(ctx, CFG.cx - sp + etx, ey + ety, sz, op, params, 'left');
+  drawOneEye(ctx, CFG.cx + sp + etx, ey + ety, sz, op, params, 'right');
+}
+
+function drawOneEye(ctx, x, y, s, op, p, side) {
+  if (op < 0.02) return;
+  ctx.shadowColor = 'rgba(200,240,255,0.9)';
+  ctx.shadowBlur = 12 * p.glow;
+  const col = (a) => `rgba(232,248,255,${a})`;
+
+  switch (p.eye) {
+    case 'crescent':
+      ctx.lineWidth = s * 0.72; ctx.lineCap = 'round';
+      ctx.strokeStyle = col(0.95 * op);
+      ctx.beginPath();
+      ctx.arc(x, y + s * 0.25, s * 0.92, Math.PI * 1.15, Math.PI * 1.85);
+      ctx.stroke(); break;
+    case 'angry': {
+      const d = side === 'left' ? 1 : -1;
+      ctx.lineWidth = s * 0.58; ctx.lineCap = 'round';
+      ctx.strokeStyle = col(0.95 * op);
+      ctx.beginPath();
+      ctx.moveTo(x - s * d, y - s * 0.65);
+      ctx.lineTo(x + s * d, y + s * 0.55);
+      ctx.stroke(); break;
+    }
+    case 'droop':
+      ctx.fillStyle = col(0.92 * op);
+      ctx.beginPath();
+      ctx.ellipse(x, y + s * 0.15, s * 0.6, s * 0.88 * op, side === 'left' ? 0.35 : -0.35, 0, TAU);
+      ctx.fill(); break;
+    case 'half_lid':
+      ctx.fillStyle = col(0.9 * op);
+      ctx.beginPath();
+      ctx.ellipse(x, y, s * 0.68, s * 0.48 * op, 0, 0, TAU);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = tinted([4, 4, 10], p.tint, 1);
+      ctx.beginPath();
+      ctx.ellipse(x, y - s * 0.32, s * 0.72, s * 0.32, 0, 0, Math.PI);
+      ctx.fill(); break;
+    case 'gleam':
+      ctx.fillStyle = col(0.92 * op);
+      ctx.beginPath();
+      ctx.ellipse(x, y, s * 0.82, s * 0.24 * op, 0, 0, TAU);
+      ctx.fill();
+      if (op > 0.3) {
+        ctx.shadowBlur = 5;
+        ctx.fillStyle = 'rgba(255,255,255,1)';
+        ctx.beginPath();
+        ctx.arc(x + s * 0.3, y - s * 0.04, s * 0.13, 0, TAU);
+        ctx.fill();
+      } break;
+    case 'circle':
+      ctx.fillStyle = col(0.95 * op);
+      ctx.beginPath();
+      ctx.arc(x, y, s * 1.15 * Math.max(0.25, op), 0, TAU);
+      ctx.fill(); break;
+    case 'dot':
+      ctx.fillStyle = col(0.95 * op);
+      ctx.beginPath();
+      ctx.arc(x, y, s * 0.32 * Math.max(0.3, op), 0, TAU);
+      ctx.fill(); break;
+    case 'curve_down':
+      ctx.lineWidth = s * 0.6; ctx.lineCap = 'round';
+      ctx.strokeStyle = col(0.82 * op);
+      ctx.beginPath();
+      ctx.arc(x, y - s * 0.12, s * 0.78, Math.PI * 0.2, Math.PI * 0.8);
+      ctx.stroke(); break;
+    case 'confident':
+      ctx.fillStyle = col(0.9 * op);
+      ctx.beginPath();
+      ctx.ellipse(x, y + s * 0.08, s * 0.72, s * 0.38 * op, side === 'left' ? -0.22 : 0.22, 0, TAU);
+      ctx.fill(); break;
+    case 'heart':
+      // 心形眼睛（复用 drawHeart 函数，避免重复路径代码）
+      drawHeart(ctx, x, y, s * 1.6, op * 0.95, 0);
+      break;
+  }
+  ctx.shadowBlur = 0;
+}
+
+// ═══════════════════════════════════════════════
+// 嘴巴
+// ═══════════════════════════════════════════════
+function drawMouth(ctx, t, params) {
+  const mx = CFG.cx, my = CFG.cy + 13, mw = 13;
+  ctx.save();
+
+  // 睡觉时画小口水泡嘴
+  if (pet.sleeping) {
+    const wobble = Math.sin(t * 2) * 2;
+    ctx.fillStyle = 'rgba(4,4,10,0.7)';
+    ctx.beginPath();
+    ctx.ellipse(mx, my + 2, mw * 0.35, mw * 0.3 + wobble * 0.3, 0, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+    return;
+  }
+
+  switch (params.mouth) {
+    case 'smile_teeth':
+      mouthShape(ctx, mx, my, mw, params.curve, 14); drawTeeth(ctx, mx, my, mw, 'top'); break;
+    case 'frown_teeth':
+      mouthShape(ctx, mx, my, mw, params.curve, 14); drawTeeth(ctx, mx, my, mw, 'bottom'); break;
+    case 'frown':
+      ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.strokeStyle = 'rgba(4,4,10,0.92)';
+      ctx.beginPath(); ctx.moveTo(mx - mw, my + 3);
+      ctx.quadraticCurveTo(mx, my - 8, mx + mw, my + 3); ctx.stroke(); break;
+    case 'smirk':
+      ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.strokeStyle = 'rgba(4,4,10,0.92)';
+      ctx.beginPath(); ctx.moveTo(mx - mw * 0.7, my + 2);
+      ctx.quadraticCurveTo(mx, my - 5, mx + mw, my - 3); ctx.stroke(); break;
+    case 'grin_teeth':
+      mouthShape(ctx, mx, my, mw * 1.15, params.curve, 16); drawTeeth(ctx, mx, my, mw * 1.15, 'top'); break;
+    case 'o_open':
+      ctx.fillStyle = '#040408';
+      ctx.beginPath(); ctx.ellipse(mx, my + 3, mw * 0.48, mw * 0.68, 0, 0, TAU); ctx.fill(); break;
+    case 'wavy':
+      ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.strokeStyle = 'rgba(4,4,10,0.9)';
+      ctx.beginPath(); ctx.moveTo(mx - mw, my);
+      for (let i = 1; i <= 8; i++) {
+        ctx.lineTo(mx - mw + (mw * 2 * i / 8), my + Math.sin(i * 1.3 + t * 3.5) * 3);
+      }
+      ctx.stroke(); break;
+    case 'soft_smile':
+      ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.strokeStyle = 'rgba(4,4,10,0.65)';
+      ctx.beginPath(); ctx.moveTo(mx - mw * 0.6, my + 1);
+      ctx.quadraticCurveTo(mx, my + 5, mx + mw * 0.6, my + 1); ctx.stroke(); break;
+    case 'smirk_teeth':
+      ctx.fillStyle = '#080812';
+      ctx.beginPath(); ctx.moveTo(mx - mw * 0.8, my + 2);
+      ctx.quadraticCurveTo(mx, my + 10, mx + mw, my - 2);
+      ctx.quadraticCurveTo(mx, my + 4, mx - mw * 0.8, my + 2); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#eef0f5';
+      ctx.beginPath(); ctx.moveTo(mx + mw * 0.25, my + 1);
+      ctx.lineTo(mx + mw * 0.5, my + 7); ctx.lineTo(mx + mw * 0.6, my + 1); ctx.closePath(); ctx.fill();
+      break;
+  }
+  ctx.restore();
+}
+
+function mouthShape(ctx, mx, my, mw, curve, depth) {
+  ctx.fillStyle = '#070710';
+  ctx.beginPath(); ctx.moveTo(mx - mw, my);
+  ctx.quadraticCurveTo(mx, my + depth * curve, mx + mw, my);
+  ctx.quadraticCurveTo(mx, my + depth * 0.25, mx - mw, my); ctx.closePath(); ctx.fill();
+}
+
+function drawTeeth(ctx, mx, my, mw, pos) {
+  ctx.fillStyle = '#eef0f5';
+  const heights = [5, 6.5, 6.5, 5];
+  for (let i = 0; i < 4; i++) {
+    const tx = mx - mw * 0.55 + (mw * 1.1 * i / 3);
+    const ty = pos === 'bottom' ? my - 2 : my + 1;
+    ctx.beginPath();
+    ctx.moveTo(tx - 1.7, ty); ctx.lineTo(tx + 1.7, ty);
+    ctx.lineTo(tx, ty + heights[i] * (pos === 'bottom' ? -1 : 1));
+    ctx.closePath(); ctx.fill();
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 气泡（增强：动画弹入）
+// ═══════════════════════════════════════════════
+function drawBubble(ctx) {
+  if (pet.bubbleTimer <= 0 || !pet.bubbleText) return;
+  const a = clamp(pet.bubbleTimer, 0, 1);
+  const popIn = clamp((2.5 - pet.bubbleTimer) / 0.2, 0, 1); // 弹入动画
+  const scale = easeOutCubic(popIn);
+  const bx = CFG.cx, by = CFG.cy - 76;
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.translate(bx, by);
+  ctx.scale(scale, scale);
+  ctx.translate(-bx, -by);
+  ctx.font = '12px "Microsoft YaHei",sans-serif';
+  ctx.textAlign = 'center';
+  const tw = ctx.measureText(pet.bubbleText).width;
+  const bw = tw + 22, bh = 24;
+
+  ctx.fillStyle = `rgba(0,170,255,${0.06 * a})`;
+  roundRect(ctx, bx - bw / 2 - 2, by - bh / 2 - 2, bw + 4, bh + 4, 10);
+  ctx.fill();
+
+  ctx.fillStyle = 'rgba(12,12,26,0.94)';
+  ctx.strokeStyle = 'rgba(0,200,255,0.5)';
+  ctx.lineWidth = 1;
+  roundRect(ctx, bx - bw / 2, by - bh / 2, bw, bh, 8);
+  ctx.fill(); ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(bx - 5, by + bh / 2); ctx.lineTo(bx, by + bh / 2 + 6);
+  ctx.lineTo(bx + 5, by + bh / 2); ctx.closePath();
+  ctx.fillStyle = 'rgba(12,12,26,0.94)'; ctx.fill();
+
+  ctx.fillStyle = 'rgba(175,228,255,1)';
+  ctx.fillText(pet.bubbleText, bx, by + 4);
+  ctx.restore();
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+// ═══════════════════════════════════════════════
+// 连击数字显示
+// ═══════════════════════════════════════════════
+function drawCombo(ctx) {
+  if (pet.combo < 2) return;
+  const a = clamp(pet.comboTimer / 2, 0, 1);
+  const popScale = 1 + pet.comboShake * 0.3;
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.font = `bold ${20 * popScale}px "Microsoft YaHei",sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.shadowColor = 'rgba(255,200,0,0.8)';
+  ctx.shadowBlur = 10;
+  const colors = ['#fff', '#ffd700', '#ff8c00', '#ff4500', '#ff1493'];
+  ctx.fillStyle = colors[Math.min(pet.combo - 2, colors.length - 1)];
+  const text = `${pet.combo} COMBO!`;
+  ctx.fillText(text, CFG.cx, CFG.cy - 95);
+  ctx.restore();
+}
+
+// ═══════════════════════════════════════════════
+// 状态更新
+// ═══════════════════════════════════════════════
+function lerpParams(dt) {
+  const tgt = EMOTIONS[pet.targetEmotion];
+  const p = pet.params;
+  const k = clamp(0.09 * dt * 60, 0, 1);
+  p.curve   = lerp(p.curve,   tgt.curve,   k);
+  p.teeth   = tgt.teeth;
+  p.tint[0] = lerp(p.tint[0], tgt.tint[0], k);
+  p.tint[1] = lerp(p.tint[1], tgt.tint[1], k);
+  p.tint[2] = lerp(p.tint[2], tgt.tint[2], k);
+  p.tension = lerp(p.tension, tgt.tension, k);
+  p.glow    = lerp(p.glow,    tgt.glow,    k);
+  p.rate    = lerp(p.rate,    tgt.rate,    k);
+  p.eyeS    = lerp(p.eyeS,    tgt.eyeS,    k);
+  p.eye     = tgt.eye;
+  p.mouth   = tgt.mouth;
+}
+
+function updateBlink(dt) {
+  if (pet.sleeping) {
+    pet.blinkT = 0;
+    pet.blinkPhase = 0;
+    return;
+  }
+  if (pet.blinkPhase === 1) {
+    pet.blinkT += dt * 13;
+    if (pet.blinkT >= 1) { pet.blinkT = 1; pet.blinkPhase = 2; }
+  } else if (pet.blinkPhase === 2) {
+    pet.blinkT -= dt * 9;
+    if (pet.blinkT <= 0) { pet.blinkT = 0; pet.blinkPhase = 0; }
+  } else {
+    pet.blinkTimer -= dt;
+    if (pet.blinkTimer <= 0) {
+      pet.blinkPhase = 1;
+      pet.blinkTimer = 2.5 + Math.random() * 4.5;
+    }
+  }
+}
+
+function setEmotion(emo, bubble) {
+  if (!EMOTIONS[emo]) return;
+  if (pet.targetEmotion === emo && !bubble) return;
+  pet.targetEmotion = emo;
+  if (pet.blinkPhase === 0 && !pet.sleeping) pet.blinkPhase = 1;
+  if (bubble !== undefined) { pet.bubbleText = bubble; pet.bubbleTimer = 2.5; }
+}
+function setStatus(status) {
+  const e = STATUS_MAP[status];
+  if (e) setEmotion(e, STATUS_TEXT[status]);
+}
+
+// ── 情绪/能量系统 ──
+function updateMood(dt) {
+  // 能量自然消耗
+  if (!pet.sleeping) {
+    pet.energy -= dt * 0.3;
+    if (pet.dragging || pet.falling) pet.energy -= dt * 1.5;
+  } else {
+    pet.energy += dt * 2; // 睡觉恢复
+  }
+  pet.energy = clamp(pet.energy, 0, 100);
+
+  // 心情自然衰减
+  if (!pet.dragging && !pet.falling) {
+    pet.mood -= dt * 0.2;
+  }
+  pet.mood = clamp(pet.mood, 0, 100);
+
+  // 能量极低时自动入睡
+  if (pet.energy < 15 && !pet.sleeping && !pet.dragging && !pet.falling) {
+    pet.sleepTimer -= dt * 3;
+    if (pet.sleepTimer <= 0) {
+      pet.sleeping = true;
+      setEmotion('sleepy', 'Zzz…');
+    }
+  }
+
+  // 睡眠恢复后醒来
+  if (pet.sleeping && pet.energy > 85) {
+    pet.sleeping = false;
+    setEmotion('happy', '精神百倍！');
+    spawnSparkle(CFG.cx, CFG.cy);
+    spawnSparkle(CFG.cx - 20, CFG.cy - 20);
+    spawnSparkle(CFG.cx + 20, CFG.cy - 20);
+  }
+}
+
+// ── 睡眠系统 ──
+function updateSleep(dt) {
+  if (pet.sleeping) {
+    pet.sleepTimer = 30; // 重置计时器
+    // 生成 Zzz
+    if (Math.random() < dt * 1.5) spawnZzz();
+    // 睡觉时缓慢恢复触手柔软度
+    pet.squashVX += (1 - pet.squashX) * 0.02;
+    pet.squashVY += (1 - pet.squashY) * 0.02;
+  } else {
+    pet.sleepTimer -= dt;
+    if (pet.sleepTimer <= 0 && !pet.dragging && !pet.falling) {
+      pet.sleeping = true;
+      setEmotion('sleepy', 'Zzz…');
+    }
+  }
+
+  // 交互时重置睡眠计时器并唤醒
+  if (pet.dragging || pet.hovering) {
+    pet.sleepTimer = 30;
+    if (pet.sleeping) {
+      pet.sleeping = false;
+      setEmotion('shocked', '！');
+      pet.squashVY += -0.1;
+      pet.squashVX += 0.08;
+    }
+  }
+}
+
+// ── 连击系统 ──
+function updateCombo(dt) {
+  if (pet.comboTimer > 0) {
+    pet.comboTimer -= dt;
+    if (pet.comboTimer <= 0) {
+      pet.combo = 0;
+      pet.comboTimer = 0;
+    }
+  }
+  pet.comboShake = lerp(pet.comboShake, 0, dt * 8);
+}
+
+// ── 屏震 ──
+function updateShake(dt) {
+  if (pet.shakeIntensity > 0) {
+    pet.shakeIntensity -= dt * 5;
+    if (pet.shakeIntensity < 0) pet.shakeIntensity = 0;
+    pet.shakeX = (Math.random() - 0.5) * pet.shakeIntensity * 8;
+    pet.shakeY = (Math.random() - 0.5) * pet.shakeIntensity * 8;
+  } else {
+    pet.shakeX = 0; pet.shakeY = 0;
+  }
+}
+
+// ── 残影 ──
+function updateTrail(dt) {
+  pet.trailTimer -= dt;
+  if (pet.dragging || pet.falling) {
+    if (pet.trailTimer <= 0) {
+      pet.trailTimer = 0.04;
+      pet.trail.push({ x: 0, y: pet.bobY - pet.walkOffset, life: 1, alpha: 0.15 });
+      if (pet.trail.length > 8) pet.trail.shift();
+    }
+  }
+  for (let i = pet.trail.length - 1; i >= 0; i--) {
+    pet.trail[i].life -= dt * 4;
+    if (pet.trail[i].life <= 0) pet.trail.splice(i, 1);
+  }
+}
+
+function drawTrail(ctx, t) {
+  for (const tr of pet.trail) {
+    ctx.save();
+    ctx.globalAlpha = tr.life * tr.alpha;
+    ctx.translate(0, tr.y);
+    ctx.translate(CFG.cx, CFG.cy);
+    ctx.scale(0.9, 0.9);
+    ctx.translate(-CFG.cx, -CFG.cy);
+    // 简化的半透明身体
+    const r = CFG.r * 0.9;
+    ctx.fillStyle = `rgba(0,180,255,${tr.life * 0.08})`;
+    ctx.beginPath();
+    ctx.arc(CFG.cx, CFG.cy, r, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+// ── 随机事件 ──
+function updateRandomEvents(dt) {
+  if (pet.sleeping || pet.dragging || pet.falling) return;
+
+  pet.eventTimer -= dt;
+  if (pet.eventTimer <= 0) {
+    pet.eventTimer = 20 + Math.random() * 30;
+    const event = Math.random();
+    if (event < 0.3) {
+      // 打喷嚏
+      triggerSneeze();
+    } else if (event < 0.5) {
+      // 打嗝
+      triggerHiccup();
+    } else if (event < 0.7) {
+      // 眨眼互动
+      setEmotion('happy', '嘿嘿~');
+      for (let i = 0; i < 3; i++) spawnSparkle();
+    } else if (event < 0.85) {
+      // 突然环顾
+      pet.lookAround = 1;
+      pet.lookDir = Math.random() < 0.5 ? -1 : 1;
+      setEmotion('shocked', '？！');
+    } else {
+      // 随机表情切换
+      const idle = ['relaxed', 'proud', 'disdain', 'badsmile'];
+      setEmotion(idle[(Math.random() * idle.length) | 0], '');
+    }
+  }
+
+  // 打喷嚏动画
+  if (pet.sneezing) {
+    pet.sneezing -= dt;
+    if (pet.sneezing <= 0) {
+      pet.sneezing = 0;
+      // 喷出粒子
+      for (let i = 0; i < 15; i++) {
+        const ang = -Math.PI / 2 + (Math.random() - 0.5) * 1.5;
+        pet.cracks.push({
+          x: CFG.cx, y: CFG.cy + 10,
+          vx: Math.cos(ang) * (2 + Math.random() * 4),
+          vy: Math.sin(ang) * (2 + Math.random() * 4),
+          size: 2 + Math.random() * 3,
+          life: 1,
+          rot: ang,
+        });
+      }
+      pet.shakeIntensity = 0.3;
+      setEmotion('relaxed', '');
+    }
+  }
+
+  // 打嗝动画
+  if (pet.hiccuping) {
+    pet.hiccuping -= dt;
+    if (pet.hiccuping <= 0) {
+      pet.hiccuping = 0;
+      setEmotion('relaxed', '');
+    } else {
+      // 打嗝时小弹跳
+      pet.squashVY += -0.03;
+    }
+  }
+}
+
+function triggerSneeze() {
+  pet.sneezing = 0.5;
+  setEmotion('shocked', '阿嚏！');
+  pet.squashVX += 0.15;
+  pet.squashVY += -0.1;
+}
+
+function triggerHiccup() {
+  pet.hiccuping = 1.5;
+  setEmotion('shocked', '嗝！');
+  pet.squashVY += -0.08;
+}
+
+// ── 光标追踪 ──
+function updateCursorTracking(dt) {
+  const k = clamp(0.15 * dt * 60, 0, 1);
+  pet.mouseRX = lerp(pet.mouseRX, pet._rawMouseX || 0, k);
+  pet.mouseRY = lerp(pet.mouseRY, pet._rawMouseY || 0, k);
+}
+
+// ── 环顾 ──
+function updateLookAround(dt) {
+  if (pet.dragging || pet.falling || pet.sleeping) return;
+  pet.lookTimer -= dt;
+  if (pet.lookTimer <= 0) {
+    pet.lookTimer = 4 + Math.random() * 6;
+    if (Math.random() < 0.4) {
+      pet.lookAround = 1;
+      pet.lookDir = Math.random() < 0.5 ? -1 : 1;
+    } else {
+      pet.lookAround = 0;
+    }
+  }
+  if (pet.lookAround > 0) {
+    pet.lookAround -= dt * 0.8;
+    const lookOffset = Math.sin(Date.now() * 0.003) * 8 * pet.lookDir;
+    pet._rawMouseX = lookOffset;
+    pet._rawMouseY = -2;
+  }
+}
+
+// ── 弹簧物理 ──
+function updateSpringPhysics(dt, t) {
+  pet.bobY = pet.sleeping ? Math.sin(t * 0.5) * 1 : Math.sin(t * 1.1) * 2.2;
+  pet.auraPhase += dt;
+
+  const springK = 0.12;
+  const dampK = 0.82;
+  const forceX = (1 - pet.squashX) * springK;
+  const forceY = (1 - pet.squashY) * springK;
+  pet.squashVX = (pet.squashVX + forceX) * dampK;
+  pet.squashVY = (pet.squashVY + forceY) * dampK;
+  pet.squashX += pet.squashVX * dt * 60;
+  pet.squashY += pet.squashVY * dt * 60;
+
+  const tiltForce = (0 - pet.tilt) * 0.1;
+  pet.tiltV = (pet.tiltV + tiltForce) * 0.85;
+  pet.tilt += pet.tiltV * dt * 60;
+
+  // 旋转动画（三连击）
+  if (pet.spin > 0) {
+    pet.spin -= dt * 4;
+    if (pet.spin < 0) pet.spin = 0;
+  }
+
+  // 缩放插值
+  pet.zoom = lerp(pet.zoom, pet.zoomTarget, clamp(dt * 5, 0, 1));
+
+  // 长按挣扎
+  if (pet.struggling) {
+    pet.squashVX += (Math.random() - 0.5) * 0.04;
+    pet.squashVY += (Math.random() - 0.5) * 0.04;
+    pet.tiltV += (Math.random() - 0.5) * 0.03;
+  }
+
+  // 行走（食物寻路时跳过自动方向切换，由 updateFoodSeeking 控制）
+  if (pet.walking && !pet.dragging && !pet.falling && !pet.sleeping && !foodSeeking) {
+    pet.walkTimer -= dt;
+    if (pet.walkTimer <= 0) {
+      if (Math.random() < 0.35) { pet.walking = false; pet.walkTimer = 2 + Math.random() * 3; }
+      else { pet.walkDir = Math.random() < 0.5 ? -1 : 1; pet.walkTimer = 1.5 + Math.random() * 2.5; }
+    }
+    if (pet.walking) {
+      pet.walkAccum += pet.walkDir * CFG.walkSpeed * dt;
+      if (Math.abs(pet.walkAccum) >= 1) {
+        const move = Math.trunc(pet.walkAccum);
+        pet.walkAccum -= move;
+        window.petAPI.moveWindow(move, 0);
+        // 行走时留脚印
+        if (Math.random() < 0.15) spawnFootprint();
+      }
+      pet.walkOffset = Math.abs(Math.sin(t * 8)) * 4;
+      pet.squashVX += (1.04 - pet.squashX) * 0.03;
+      pet.squashVY += (0.98 - pet.squashY) * 0.03;
+      pet.tiltV += (pet.walkDir * 0.04 - pet.tilt) * 0.02;
+    }
+  } else if (!pet.dragging && !pet.falling && !pet.sleeping && !foodSeeking) {
+    pet.walkTimer -= dt;
+    if (pet.walkTimer <= 0) { pet.walking = true; pet.walkDir = Math.random() < 0.5 ? -1 : 1; pet.walkTimer = 2 + Math.random() * 3; }
+    pet.walkOffset = lerp(pet.walkOffset, 0, 0.1);
+  } else if (foodSeeking) {
+    // 食物寻路时只保留行走动画（squash/tilt），不再自动调 moveWindow
+    pet.walkOffset = Math.abs(Math.sin(t * 8)) * 4;
+    pet.squashVX += (1.04 - pet.squashX) * 0.03;
+    pet.squashVY += (0.98 - pet.squashY) * 0.03;
+    pet.tiltV += (pet.walkDir * 0.04 - pet.tilt) * 0.02;
+  }
+
+  // 气泡
+  if (pet.bubbleTimer > 0) pet.bubbleTimer -= dt;
+
+  // 抚摸计数
+  if (pet.petTimer > 0) { pet.petTimer -= dt; if (pet.petTimer <= 0) pet.petCount = 0; }
+
+  // 悬停反应
+  if (pet.hovering && !pet.dragging && pet.blinkPhase === 0 && !pet.sleeping) {
+    pet.params.eyeS = lerp(pet.params.eyeS, EMOTIONS[pet.targetEmotion].eyeS * 1.08, 0.1);
+  }
+
+  // 随机待机表情（基于心情）
+  if (!pet.dragging && !pet.falling && !pet.sleeping) {
+    pet.idleTimer -= dt;
+    if (pet.idleTimer <= 0) {
+      pet.idleTimer = 12 + Math.random() * 18;
+      // 根据心情选择表情
+      let idleEmo = 'relaxed';
+      for (const threshold of Object.keys(MOOD_EMOTIONS).sort((a, b) => b - a)) {
+        if (pet.mood >= parseInt(threshold)) { idleEmo = MOOD_EMOTIONS[threshold]; break; }
+      }
+      if (Math.random() < 0.3) idleEmo = 'disdain';
+      if (idleEmo !== 'love') setEmotion(idleEmo, '');
+    }
+  }
+
+  // 心情好时偶尔产生星尘和音符
+  if (pet.mood > 70 && Math.random() < dt * 0.5) {
+    spawnSparkle();
+  }
+  if (pet.mood > 85 && Math.random() < dt * 0.3) {
+    spawnNote();
+  }
+
+  // 工作状态（proud表情）时出汗
+  if (pet.targetEmotion === 'proud' && pet.energy < 50 && Math.random() < dt * 0.8) {
+    spawnSweat();
+  }
+
+  updateDrips();
+}
+
+// ═══════════════════════════════════════════════
+// 主渲染循环
+// ═══════════════════════════════════════════════
+let lastT = null;
+let rafSkipCounter = 0;
+function loop(ts) {
+  // 首帧 / 异常时间戳保护
+  if (lastT === null || ts < lastT) {
+    lastT = ts;
+    requestAnimationFrame(loop);
+    return;
+  }
+  const dt = Math.min(0.05, (ts - lastT) / 1000);
+  lastT = ts;
+  const t = ts / 1000;
+
+  // 隐藏状态：低频更新（仅维持传送光效衰减）
+  if (pet.hidden) {
+    rafSkipCounter++;
+    if (rafSkipCounter < 6) {  // 6 帧抽 1，约 10Hz
+      requestAnimationFrame(loop);
+      return;
+    }
+    rafSkipCounter = 0;
+    if (pet.teleportGlow > 0.01) pet.teleportGlow -= dt * 2;
+    if (pet.teleportGlow < 0) pet.teleportGlow = 0;
+    requestAnimationFrame(loop);
+    return;
+  }
+
+  ctx.clearRect(0, 0, CFG.W, CFG.H);
+
+  // 更新所有系统
+  lerpParams(dt);
+  updateCharMorph(dt);
+  updateBlink(dt);
+  updateCursorTracking(dt);
+  updateLookAround(dt);
+  updateSpringPhysics(dt, t);
+  updateParticles(dt, pet.params.rate);
+  updateMood(dt);
+  updateSleep(dt);
+  updateCombo(dt);
+  updateShake(dt);
+  updateTrail(dt);
+  updateRandomEvents(dt);
+  updateHearts(dt);
+  updateSweat(dt);
+  updateZzz(dt);
+  updateCracks(dt);
+  updateSparkles(dt);
+  updateLanAnimations(dt, t);
+  updateNotes(dt);
+  updateFootprints(dt);
+  updateShockwaves(dt);
+  updateThoughts(dt);
+  updateDayNight(dt);
+  updateEvolution(dt);
+  updateDance(dt, t);
+  updateEating(dt);
+  updateMagnet(dt);
+  updateBlush(dt);
+  updateFoodSeeking(dt);
+
+  // 屏震
+  ctx.save();
+  ctx.translate(pet.shakeX, pet.shakeY);
+
+  // 光环（在身体下方）
+  drawAura(ctx, t, CFG.r * pet.zoom, CFG.r * pet.zoom);
+
+  // 残影
+  drawTrail(ctx, t);
+
+  ctx.save();
+
+  // 缩放
+  if (pet.zoom !== 1) {
+    ctx.translate(CFG.cx, CFG.cy);
+    ctx.scale(pet.zoom, pet.zoom);
+    ctx.translate(-CFG.cx, -CFG.cy);
+  }
+
+  // 飞走动画
+  if (pet.flyAway) {
+    const fa = pet.flyAway;
+    fa.t += dt;
+    const prog = clamp(fa.t / 0.6, 0, 1);
+    const scale = 1 - easeOut(prog) * 0.95;
+    const offX = fa.dirX * easeOut(prog) * 80;
+    const offY = fa.dirY * easeOut(prog) * 80;
+    ctx.globalAlpha = 1 - prog;
+    ctx.translate(CFG.cx + offX, CFG.cy + offY);
+    ctx.scale(scale, scale);
+    ctx.rotate(prog * fa.dirX * 3);
+    ctx.translate(-CFG.cx, -CFG.cy);
+    if (prog >= 1) { pet.flyAway = null; pet.hidden = true; }
+  }
+
+  // 从天而降
+  if (pet.dropIn) {
+    const di = pet.dropIn;
+    di.t += dt;
+    const prog = clamp(di.t / 0.8, 0, 1);
+    if (prog < 0.7) {
+      const fp = prog / 0.7;
+      ctx.translate(0, lerp(-200, 0, easeOut(fp)));
+    } else {
+      const bp = (prog - 0.7) / 0.3;
+      pet.squashVY += -0.05 * (1 - bp);
+      pet.squashVX += 0.04 * (1 - bp);
+    }
+    if (prog >= 1) {
+      pet.dropIn = null;
+      pet.squashVY += -0.2;
+      pet.squashVX += 0.15;
+    }
+  }
+
+  // 旋转（三连击）
+  if (pet.spin > 0) {
+    ctx.translate(CFG.cx, CFG.cy);
+    ctx.rotate(pet.spin * TAU);
+    ctx.translate(-CFG.cx, -CFG.cy);
+  }
+
+  ctx.translate(0, pet.bobY - pet.walkOffset);
+  ctx.rotate(pet.tilt);
+
+  // 角色切换变形动画
+  const morphScale = getMorphScale();
+  const morphAlpha = getMorphAlpha();
+  if (morphScale !== 1) {
+    ctx.translate(CFG.cx, CFG.cy);
+    ctx.scale(morphScale, morphScale);
+    ctx.translate(-CFG.cx, -CFG.cy);
+  }
+  ctx.globalAlpha = morphAlpha;
+
+  const charDef = CHARACTERS[pet.character] || CHARACTERS.slime;
+  const sprite = getSprite(pet.character);
+
+  if (sprite) {
+    // 精灵图渲染（AI生成高质量形象）
+    drawSpriteBody(ctx, t, pet.params, sprite, charDef);
+  } else {
+    // 程序化渲染（精灵图加载前的降级方案）
+    if (charDef.customBody) {
+      charDef.customBody(ctx, t, pet.params);
+    } else {
+      drawBody(ctx, t, pet.params);
+    }
+    if (charDef.customFeatures) {
+      charDef.customFeatures(ctx, t, pet.params);
+    }
+    drawEyes(ctx, t, pet.params);
+    drawBlush(ctx);
+    drawMouth(ctx, t, pet.params);
+  }
+  drawParticles(ctx);
+  ctx.globalAlpha = 1;
+  ctx.restore();
+
+  // 效果粒子（不受旋转/位移影响）
+  drawFootprints(ctx);
+  drawShockwaves(ctx);
+  drawCracks(ctx);
+  drawSparkles(ctx);
+  drawHearts(ctx);
+  drawNotes(ctx);
+  drawSweat(ctx);
+  drawZzz(ctx);
+
+  // 传送光效
+  if (pet.teleportGlow > 0.01) {
+    drawTeleportEffect(ctx, CFG.cx, CFG.cy, pet.teleportGlow, t);
+  }
+
+  // 连击数字
+  drawCombo(ctx);
+
+  // 思考气泡
+  drawThoughts(ctx);
+
+  // 气泡
+  drawBubble(ctx);
+
+  ctx.restore(); // 屏震 restore
+
+  requestAnimationFrame(loop);
+}
+
+// ═══════════════════════════════════════════════
+// 联机动画 & 传送光效
+// ═══════════════════════════════════════════════
+function updateLanAnimations(dt, t) {
+  if (pet.teleportGlow > 0) {
+    pet.teleportGlow -= dt * 2;
+    if (pet.teleportGlow < 0) pet.teleportGlow = 0;
+  }
+}
+
+function drawTeleportEffect(ctx, cx, cy, intensity, t) {
+  const r = 60 + (1 - intensity) * 40;
+  const a = intensity;
+  ctx.fillStyle = `rgba(0,200,255,${a * 0.06})`;
+  ctx.beginPath(); ctx.arc(cx, cy, r * 1.8, 0, TAU); ctx.fill();
+  ctx.fillStyle = `rgba(0,220,255,${a * 0.12})`;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.fill();
+  ctx.fillStyle = `rgba(150,240,255,${a * 0.3})`;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 0.4 * (0.8 + Math.sin(t * 15) * 0.2), 0, TAU);
+  ctx.fill();
+  ctx.strokeStyle = `rgba(0,220,255,${a * 0.2})`;
+  ctx.lineWidth = 1.5;
+  for (let i = 0; i < 6; i++) {
+    const ang = t * 4 + i * (TAU / 6);
+    ctx.beginPath();
+    ctx.moveTo(cx + Math.cos(ang) * r * 0.5, cy + Math.sin(ang) * r * 0.5);
+    ctx.lineTo(cx + Math.cos(ang) * r * 1.5, cy + Math.sin(ang) * r * 1.5);
+    ctx.stroke();
+  }
+}
+
+// 序列化桌宠状态（包含心情/能量）
+window.__getPetStateForTransfer = function() {
+  return {
+    emotion: pet.targetEmotion,
+    mood: pet.mood,
+    energy: pet.energy,
+    params: {
+      eye: pet.params.eye,
+      mouth: pet.params.mouth,
+      curve: pet.params.curve,
+      teeth: pet.params.teeth,
+      tint: [...pet.params.tint],
+      tension: pet.params.tension,
+      glow: pet.params.glow,
+      rate: pet.params.rate,
+      eyeS: pet.params.eyeS,
+    },
+    squashX: pet.squashX,
+    squashY: pet.squashY,
+    totalPets: pet.totalPets,
+    totalDrags: pet.totalDrags,
+    evolutionLevel: pet.evolutionLevel,
+    zoom: pet.zoomTarget,
+    character: pet.character,
+  };
+};
+
+// ═══════════════════════════════════════════════
+// 鼠标交互（增强版）
+// ═══════════════════════════════════════════════
+let dSX = 0, dSY = 0, lMX = 0, lMY = 0, downT = 0;
+let pressTimer = 0;
+let clickCount = 0;
+let lastClickTime = 0;
+
+canvas.addEventListener('mousedown', (e) => {
+  dSX = e.screenX; dSY = e.screenY; lMX = e.screenX; lMY = e.screenY;
+  downT = Date.now();
+  pet.dragging = false;
+  pet.dragHist = [];
+  pet.sleepTimer = 30;
+  if (pet.falling) { window.petAPI.physicsCancel(); pet.falling = false; }
+
+  // 长按检测
+  pressTimer = setTimeout(() => {
+    if (!pet.dragging && Date.now() - downT > 500) {
+      pet.struggling = true;
+      setEmotion('angry', '放开放开！');
+    }
+  }, 500);
+});
+
+canvas.addEventListener('mousemove', (e) => {
+  if (e.buttons !== 1) {
+    const dx = e.clientX - CFG.cx, dy = e.clientY - CFG.cy;
+    pet.hovering = (dx * dx + dy * dy) < 60 * 60;
+    return;
+  }
+
+  const dx = e.screenX - lMX, dy = e.screenY - lMY;
+
+  if (Math.abs(e.screenX - dSX) > 3 || Math.abs(e.screenY - dSY) > 3) {
+    if (!pet.dragging) pet.totalDrags++; // 记录拖拽次数
+    pet.dragging = true;
+    pet.struggling = false;
+    clearTimeout(pressTimer);
+    pet.walking = false;
+    pet.walkTimer = 3;
+
+    if (pet.sleeping) {
+      pet.sleeping = false;
+      setEmotion('shocked', '！');
+    }
+
+    if (pet.targetEmotion !== 'shocked' && pet.targetEmotion !== 'scared' && pet.targetEmotion !== 'dizzy') {
+      setEmotion('shocked', '！');
+    }
+    pet.squashVY += (0.92 - pet.squashY) * 0.08;
+    pet.squashVX += (1.08 - pet.squashX) * 0.08;
+
+    pet.dragHist.push({ dx, dy, t: Date.now() });
+    if (pet.dragHist.length > 5) pet.dragHist.shift();
+
+    window.petAPI.moveWindow(dx, dy);
+  }
+  lMX = e.screenX; lMY = e.screenY;
+});
+
+canvas.addEventListener('mouseup', (e) => {
+  clearTimeout(pressTimer);
+  pet.struggling = false;
+
+  if (pet.dragging) {
+    pet.dragging = false;
+    pet.mood = clamp(pet.mood - 2, 0, 100); // 拖拽略降心情
+
+    let vx = 0, vy = 0;
+    if (pet.dragHist.length > 0) {
+      const now = Date.now();
+      const recent = pet.dragHist.filter(h => now - h.t < 120);
+      if (recent.length > 0) {
+        for (const h of recent) { vx += h.dx; vy += h.dy; }
+        vx /= recent.length;
+        vy /= recent.length;
+      }
+    }
+
+    if (Math.abs(vx) > CFG.dragThrowMin || Math.abs(vy) > CFG.dragThrowMin) {
+      pet.falling = true;
+      window.petAPI.physicsDrop(vx, vy);
+      setEmotion('scared', '啊！');
+    } else {
+      pet.squashVY += (0.82 - pet.squashY) * 0.15;
+      pet.squashVX += (1.18 - pet.squashX) * 0.15;
+      setEmotion('relaxed', '');
+    }
+  } else if (Date.now() - downT < 250) {
+    // 点击
+    const now = Date.now();
+    if (now - lastClickTime < 400) {
+      clickCount++;
+    } else {
+      clickCount = 1;
+    }
+    lastClickTime = now;
+
+    pet.petCount++; pet.petTimer = 3;
+    pet.totalPets++; // 记录点击次数（进化系统）
+    pet.mood = clamp(pet.mood + 5, 0, 100); // 点击提升心情
+    pet.sleepTimer = 30;
+
+    // 连击系统
+    pet.combo++;
+    pet.comboTimer = 2;
+    pet.comboShake = 1;
+
+    // 产生心形/星尘
+    if (pet.combo >= 3) {
+      for (let i = 0; i < 2; i++) spawnHeart();
+      for (let i = 0; i < 3; i++) spawnSparkle();
+    } else {
+      spawnSparkle();
+    }
+
+    // 三连击 → 旋转
+    if (clickCount >= 3) {
+      pet.spin = 1;
+      setEmotion('love', '转转转~');
+      clickCount = 0;
+      pet.mood = clamp(pet.mood + 10, 0, 100);
+      for (let i = 0; i < 5; i++) spawnHeart();
+      // 五连击 → 舞蹈
+      if (pet.combo >= 5) {
+        setTimeout(() => startDance(), 600);
+      }
+    } else if (pet.petCount >= 3) {
+      setEmotion('love', '好喜欢~');
+      pet.petCount = 0;
+      pet.mood = clamp(pet.mood + 8, 0, 100);
+      for (let i = 0; i < 3; i++) spawnHeart();
+    } else {
+      const r = ['happy', 'proud', 'relaxed'];
+      const msgs = ['~', '嗯~', '嘿！', '舒服~', '嘿嘿', '再摸摸~'];
+      setEmotion(r[(Math.random() * 3) | 0], msgs[(Math.random() * msgs.length) | 0]);
+    }
+  }
+  pet.hovering = false;
+});
+
+canvas.addEventListener('dblclick', () => {
+  pet.squashVY += -0.3;
+  pet.squashVX += 0.25;
+  setEmotion('shocked', '！');
+  pet.shakeIntensity = 0.2;
+  setTimeout(() => setEmotion('happy', '哇！'), 350);
+  for (let i = 0; i < 5; i++) spawnSparkle();
+});
+
+// 滚轮缩放
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const delta = e.deltaY > 0 ? -0.1 : 0.1;
+  pet.zoomTarget = clamp(pet.zoomTarget + delta, 0.5, 2.0);
+  if (pet.zoomTarget > 1.5) setEmotion('proud', '变大！');
+  else if (pet.zoomTarget < 0.7) setEmotion('scared', '好小…');
+  else setEmotion('shocked', '！');
+  pet.sleepTimer = 30;
+}, { passive: false });
+
+// 右键喂食
+canvas.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  feedPet();
+});
+
+// 键盘快捷键
+window.addEventListener('keydown', (e) => {
+  switch (e.key.toLowerCase()) {
+    case ' ':
+      e.preventDefault();
+      // 空格 = 拍拍
+      pet.petCount++; pet.petTimer = 3;
+      pet.totalPets++;
+      pet.mood = clamp(pet.mood + 5, 0, 100);
+      pet.sleepTimer = 30;
+      pet.combo++;
+      pet.comboTimer = 2;
+      pet.comboShake = 1;
+      spawnSparkle();
+      setEmotion('happy', '嗯~');
+      break;
+    case 's':
+      // S = 睡眠切换
+      if (pet.sleeping) {
+        pet.sleeping = false;
+        setEmotion('shocked', '！');
+      } else {
+        pet.sleeping = true;
+        setEmotion('sleepy', 'Zzz…');
+      }
+      break;
+    case 'd':
+      // D = 舞蹈
+      startDance();
+      break;
+    case 'f':
+      // F = 喂食
+      feedPet();
+      break;
+    case 'r':
+      // R = 重置缩放
+      pet.zoomTarget = 1;
+      setEmotion('shocked', '！');
+      break;
+  }
+});
+
+canvas.addEventListener('mouseleave', () => { pet.hovering = false; });
+
+// ═══════════════════════════════════════════════
+// IPC 事件
+// ═══════════════════════════════════════════════
+window.petAPI.onEmotionChange((emo) => setEmotion(emo, EMOTION_TEXT[emo] || ''));
+window.petAPI.onStatusChange((st) => setStatus(st));
+window.petAPI.onAutoWalkToggle((v) => {
+  pet.walking = v;
+  if (!v) pet.walkTimer = 9999;
+});
+
+// 新功能事件
+window.petAPI.onFeed(() => feedPet());
+window.petAPI.onDance(() => startDance());
+window.petAPI.onSleepToggle(() => {
+  if (pet.sleeping) {
+    pet.sleeping = false;
+    setEmotion('shocked', '！');
+  } else {
+    pet.sleeping = true;
+    setEmotion('sleepy', 'Zzz…');
+  }
+});
+window.petAPI.onResetZoom(() => {
+  pet.zoomTarget = 1;
+  setEmotion('shocked', '！');
+});
+
+window.petAPI.onCharacterChange((charKey) => {
+  if (CHARACTERS[charKey]) {
+    startCharMorph(charKey);
+  }
+});
+
+window.petAPI.onCursorPos((pos) => {
+  // 附带的窗口屏幕坐标用于食物坐标转换
+  if (pos.winX != null) windowX = pos.winX;
+  if (pos.winY != null) windowY = pos.winY;
+  if (pet.lookAround > 0 || pet.sleeping) return;
+  pet._rawMouseX = pos.x;
+  pet._rawMouseY = pos.y;
+});
+
+// 接收主进程推送的食物列表
+window.petAPI.onFoodsUpdate((list) => {
+  foods = list || [];
+  console.log(`[FOOD] Received ${foods.length} foods`);
+});
+
+window.petAPI.onPhysicsBounce((force) => {
+  pet.squashVY += clamp(-force * 0.04, -0.2, 0);
+  pet.squashVX += clamp(force * 0.03, 0, 0.15);
+  if (force > 4) {
+    setEmotion('shocked', '！');
+    pet.shakeIntensity = clamp(force * 0.05, 0, 0.5);
+    spawnCracks(CFG.cx, CFG.cy + 30, Math.min(8, force | 0), force * 0.15);
+  }
+});
+
+window.petAPI.onPhysicsLanded(() => {
+  pet.falling = false;
+  pet.squashVY += -0.18;
+  pet.squashVX += 0.15;
+  setEmotion('relaxed', '');
+  spawnShockwave(CFG.cx, CFG.cy + 35, 1.5);
+  spawnCracks(CFG.cx, CFG.cy + 35, 6, 0.8);
+  pet.shakeIntensity = 0.15;
+  setTimeout(() => setEmotion('happy', '~'), 400);
+});
+
+// ═══════════════════════════════════════════════
+// 局域网联机事件
+// ═══════════════════════════════════════════════
+let lanEnabled = false;
+window.petAPI.onLanToggle((enabled) => {
+  lanEnabled = enabled;
+  if (enabled) {
+    setEmotion('happy', '联机已开启');
+    setTimeout(() => setEmotion('relaxed', ''), 2000);
+  } else {
+    setEmotion('sad', '联机已关闭');
+    setTimeout(() => setEmotion('relaxed', ''), 2000);
+  }
+});
+
+// peer 列表变化提示
+window.petAPI.onPeersChanged((data) => {
+  if (!lanEnabled || !data) return;
+  const event = data.event;
+  const info = data.info;
+  if (event === 'add' && info && info.name) {
+    setEmotion('happy', `${info.name} 上线`);
+    setTimeout(() => setEmotion('relaxed', ''), 2500);
+  } else if (event === 'remove' && Array.isArray(info)) {
+    const names = info.map(p => p.name).join(', ');
+    if (names) {
+      setEmotion('sad', `${names} 离线`);
+      setTimeout(() => setEmotion('relaxed', ''), 2500);
+    }
+  }
+});
+
+window.petAPI.onPetSendStart((info) => {
+  if (!pet.flyAway) {
+    const ang = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 0.6;
+    pet.flyAway = { t: 0, dirX: Math.cos(ang), dirY: Math.sin(ang) };
+  }
+  pet.teleportGlow = 1;
+  setEmotion('shocked', `飞向 ${info.peerName}！`);
+});
+
+window.petAPI.onPetSendSuccess(() => {
+  pet.hidden = true;
+  pet.bubbleText = '';
+  pet.bubbleTimer = 0;
+});
+
+window.petAPI.onPetSendFail(() => {
+  pet.hidden = false;
+  pet.flyAway = null;
+  setEmotion('sad', '发送失败…');
+  setTimeout(() => setEmotion('relaxed', ''), 3000);
+});
+
+window.petAPI.onPetReceived((state) => {
+  pet.hidden = false;
+  pet.flyAway = null;
+
+  if (state.emotion && EMOTIONS[state.emotion]) {
+    pet.targetEmotion = state.emotion;
+  }
+  if (state.params) {
+    pet.params = {
+      eye: state.params.eye || pet.params.eye,
+      mouth: state.params.mouth || pet.params.mouth,
+      curve: state.params.curve ?? pet.params.curve,
+      teeth: state.params.teeth ?? pet.params.teeth,
+      tint: state.params.tint ? [...state.params.tint] : pet.params.tint,
+      tension: state.params.tension ?? pet.params.tension,
+      glow: state.params.glow ?? pet.params.glow,
+      rate: state.params.rate ?? pet.params.rate,
+      eyeS: state.params.eyeS ?? pet.params.eyeS,
+    };
+  }
+  if (state.squashX) pet.squashX = state.squashX;
+  if (state.squashY) pet.squashY = state.squashY;
+  if (state.mood != null) pet.mood = state.mood;
+  if (state.energy != null) pet.energy = state.energy;
+  if (state.totalPets != null) pet.totalPets = state.totalPets;
+  if (state.totalDrags != null) pet.totalDrags = state.totalDrags;
+  if (state.evolutionLevel != null) pet.evolutionLevel = state.evolutionLevel;
+  if (state.zoom != null) pet.zoomTarget = state.zoom;
+  if (state.character && CHARACTERS[state.character]) {
+    pet.character = state.character;
+    window.petAPI.characterSync(state.character);
+  }
+
+  pet.dropIn = { t: 0 };
+  pet.teleportGlow = 1;
+
+  const senderName = state.senderName || '未知';
+  setEmotion('shocked', `来自 ${senderName}！`);
+  setTimeout(() => {
+    if (state.emotion && EMOTIONS[state.emotion]) {
+      setEmotion(state.emotion, '');
+    } else {
+      setEmotion('happy', '~');
+    }
+  }, 1500);
+});
+
+window.petAPI.onEdgeEscape((info) => {
+  const peer = info.peer;
+  if (!peer) return;
+  const len = Math.hypot(info.vx, info.vy) || 1;
+  pet.flyAway = { t: 0, dirX: info.vx / len, dirY: info.vy / len };
+  pet.teleportGlow = 1;
+  setEmotion('shocked', `飞向 ${peer.name}！`);
+  window.petAPI.sendPetTo(peer.id);
+});
+
+window.petAPI.onEdgeBounceBack(() => {
+  pet.falling = false;
+  pet.squashVY += -0.2;
+  pet.squashVX += 0.15;
+  setEmotion('scared', '没人接住！');
+  setTimeout(() => setEmotion('relaxed', ''), 2000);
+});
+
+window.petAPI.onPetRecall(() => {
+  pet.hidden = false;
+  pet.flyAway = null;
+  pet.dropIn = { t: 0 };
+  pet.teleportGlow = 1;
+  setEmotion('happy', '回来啦！');
+});
+
+// 启动光标轮询
+window.petAPI.startCursorPoll();
+
+// ═══════════════════════════════════════════════
+// 托盘图标
+// ═══════════════════════════════════════════════
+function genTrayIcon() {
+  const c = document.createElement('canvas');
+  c.width = 32; c.height = 32;
+  const x = c.getContext('2d');
+  x.shadowColor = 'rgba(0,200,255,0.8)';
+  x.shadowBlur = 5;
+  x.fillStyle = '#0a0a14';
+  x.beginPath(); x.ellipse(16, 18, 10, 9, 0, 0, TAU); x.fill();
+  x.strokeStyle = 'rgba(0,180,255,0.5)';
+  x.lineWidth = 1; x.stroke();
+  x.shadowColor = 'rgba(200,240,255,0.9)';
+  x.shadowBlur = 4;
+  x.fillStyle = '#e6f8ff';
+  x.beginPath(); x.arc(12, 16, 1.8, 0, TAU); x.arc(20, 16, 1.8, 0, TAU); x.fill();
+  window.petAPI.setTrayIcon(c.toDataURL('image/png'));
+}
+
+// ═══════════════════════════════════════════════
+// 初始化
+// ═══════════════════════════════════════════════
+genTrayIcon();
+requestAnimationFrame(loop);

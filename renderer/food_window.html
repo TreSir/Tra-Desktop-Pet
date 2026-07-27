@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: transparent; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="foodCanvas"></canvas>
+<script>
+'use strict';
+const canvas = document.getElementById('foodCanvas');
+const ctx = canvas.getContext('2d');
+const TAU = Math.PI * 2;
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+let foods = [];
+console.log('[FOOD-WIN] food_window.html loaded');
+console.log('[FOOD-WIN] foodAPI available:', typeof window.foodAPI);
+window.foodAPI.onFoodsUpdate((list) => {
+  foods = list || [];
+  console.log(`[FOOD-WIN] Received ${foods.length} foods`);
+});
+
+let drawCount = 0;
+let lastLogTime = 0;
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const now = Date.now();
+  drawCount++;
+  if (now - lastLogTime > 2000) {
+    console.log(`[FOOD-WIN] draw frame=${drawCount}, foods=${foods.length}, canvas=${canvas.width}x${canvas.height}`);
+    lastLogTime = now;
+  }
+
+  // 调试：画一个红色圆确认窗口可见
+  ctx.save();
+  ctx.fillStyle = 'rgba(255,0,0,0.5)';
+  ctx.beginPath();
+  ctx.arc(100, 100, 30, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  for (let i = 0; i < foods.length; i++) {
+    const f = foods[i];
+    const bob = Math.sin(now * 0.005 + i * 0.7) * 4;
+    const x = f.screenX;
+    const y = f.screenY + bob;
+    const isTarget = (i === 0);
+
+    // 地面阴影
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    ctx.beginPath();
+    ctx.ellipse(x, f.screenY + 18, 14, 4, 0, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+
+    // 食物光晕 + 图标
+    ctx.save();
+    ctx.shadowColor = isTarget ? 'rgba(255,200,80,0.9)' : 'rgba(255,255,255,0.6)';
+    ctx.shadowBlur = isTarget ? 20 : 12;
+    ctx.font = '34px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(f.type || '🍎', x, y);
+    ctx.restore();
+
+    // 目标食物指示环（旋转虚线）
+    if (isTarget) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,200,80,0.75)';
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([6, 5]);
+      ctx.lineDashOffset = -now * 0.04;
+      ctx.beginPath();
+      ctx.arc(x, y, 26, 0, TAU);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+  requestAnimationFrame(draw);
+}
+draw();
+</script>
+</body>
+</html>

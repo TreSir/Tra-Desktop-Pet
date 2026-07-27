@@ -1,0 +1,41 @@
+# ── 依赖 ──
+node_modules/
+
+# ── 运行时数据（缓存、用户配置、心跳日志）──
+.userdata/
+
+# ── 调试产物 ──
+renderer/assets/*_keyed.png
+
+# ── 日志 ──
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ── 环境与密钥 ──
+.env
+.env.local
+.env.*.local
+
+# ── 编辑器 / IDE ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── 操作系统 ──
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── 打包产物 ──
+dist/
+out/
+build/
+*.exe
+*.msi
+*.dmg
+*.AppImage
+*.deb

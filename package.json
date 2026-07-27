@@ -1,0 +1,12 @@
+{
+  "name": "symbiote-pet",
+  "version": "1.0.0",
+  "description": "Digital Symbiote Desktop Pet - 暗色粘液生物桌宠",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  }
+}
