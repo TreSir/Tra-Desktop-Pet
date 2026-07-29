@@ -48,6 +48,8 @@ contextBridge.exposeInMainWorld('petAPI', {
   // ── 事件监听 ──
   onEmotionChange: (cb) => ipcRenderer.on('emotion-change', (_e, val) => cb(val)),
   onStatusChange: (cb) => ipcRenderer.on('status-change', (_e, val) => cb(val)),
+  onHideToggle: (cb) => ipcRenderer.on('hide-toggle', (_e, val) => cb(val)),
+  notifyHidden: () => ipcRenderer.send('pet-hidden-anim-done'),
   onAutoWalkToggle: (cb) => ipcRenderer.on('auto-walk-toggle', (_e, val) => cb(val)),
   onCursorPos: (cb) => ipcRenderer.on('cursor-pos', (_e, val) => cb(val)),
   onPhysicsBounce: (cb) => ipcRenderer.on('physics-bounce', (_e, val) => cb(val)),

@@ -132,6 +132,104 @@ function stopMouseHook() {
   }
 }
 
+// ── H 键快速隐藏/显示 ──
+let keyHookProc = null;          // PowerShell 全局键盘监听子进程
+let petHidden = false;           // 桌宠是否处于隐藏状态
+
+// 监听 H 键（虚拟键码 0x48），边沿触发
+const KEY_HOOK_SCRIPT = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class K {
+  [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int v);
+}
+"@
+$last = $false
+while ($true) {
+  $h = ([K]::GetAsyncKeyState(0x48) -band 0x8000) -ne 0
+  if ($h -and -not $last) {
+    Write-Output "H"
+    [Console]::Out.Flush()
+  }
+  $last = $h
+  Start-Sleep -Milliseconds 30
+}
+`;
+
+function startKeyHook() {
+  if (keyHookProc) return;
+  const encoded = Buffer.from(KEY_HOOK_SCRIPT, 'utf16le').toString('base64');
+  const psExe = process.env.SystemRoot
+    ? path.join(process.env.SystemRoot, 'System32\\WindowsPowerShell\\v1.0\\powershell.exe')
+    : 'powershell.exe';
+  try {
+    keyHookProc = spawn(psExe, ['-NoProfile', '-EncodedCommand', encoded], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch (e) {
+    console.error('[HKEY] PowerShell hook spawn failed:', e.message);
+    keyHookProc = null;
+    return;
+  }
+  keyHookProc.on('error', (e) => {
+    console.error('[HKEY] PowerShell hook error:', e.message);
+    keyHookProc = null;
+  });
+  let buf = '';
+  keyHookProc.stdout.on('data', (chunk) => {
+    buf += chunk.toString();
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (line === 'H') {
+        togglePetVisibility();
+      }
+    }
+  });
+  console.log('[HKEY] Keyboard hook started (H to toggle)');
+}
+
+function stopKeyHook() {
+  if (keyHookProc) {
+    try { keyHookProc.kill(); } catch (e) {}
+    keyHookProc = null;
+    console.log('[HKEY] Keyboard hook stopped');
+  }
+}
+
+// 切换桌宠可见性：触发动画（隐藏/显示都由渲染进程动画驱动）
+function togglePetVisibility() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isVisible() && !petHidden) {
+    // 当前可见 → 触发隐藏动画（渲染进程播放完才 hide）
+    mainWindow.webContents.send('hide-toggle', 'hide');
+    console.log('[HKEY] Hide animation triggered');
+  } else {
+    // 当前隐藏 → 在鼠标位置弹出，并触发显示动画
+    const { x, y } = screen.getCursorScreenPoint();
+    const CANVAS_CX = 210, CANVAS_CY = 230;
+    const nx = Math.round(x - CANVAS_CX);
+    const ny = Math.round(y - CANVAS_CY);
+    mainWindow.setPosition(nx, ny);
+    mainWindow.show();
+    mainWindow.focus();
+    petHidden = false;
+    mainWindow.webContents.send('hide-toggle', 'show');
+    console.log(`[HKEY] Show animation at mouse (${x}, ${y})`);
+  }
+}
+
+// 渲染进程动画完成后真正隐藏窗口
+ipcMain.on('pet-hidden-anim-done', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.hide();
+    petHidden = true;
+    console.log('[HKEY] Pet hidden (anim done)');
+  }
+});
+
 function createFoodWindow() {
   if (foodWindow) return;
   const { width, height } = screen.getPrimaryDisplay().workAreaSize;
@@ -1084,6 +1182,7 @@ app.whenReady().then(() => {
   loadShopUnlocks();  // 加载商店解锁状态
   createWindow();
   createTray();
+  startKeyHook();  // 启动 H 键全局监听
   writeHeartbeat();
   heartbeatTimer = setInterval(writeHeartbeat, 5000);
 
@@ -1108,6 +1207,7 @@ app.on('window-all-closed', () => {
   if (physicsTimer) clearInterval(physicsTimer);
   if (heartbeatTimer) clearInterval(heartbeatTimer);
   stopMouseHook();
+  stopKeyHook();
   lan.stop();
   if (tray) tray.destroy();
   app.quit();

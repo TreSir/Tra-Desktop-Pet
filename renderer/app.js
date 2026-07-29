@@ -209,6 +209,10 @@ const pet = {
   edgePeek: 0,
   edgePeekDir: 0,
 
+  // ── H 键隐藏/显示动画 ──
+  hideAnim: 0,         // 0=无动画, >0=隐藏中(0→1), <0=显示中(0→-1)
+  hideAnimT: 0,        // 动画进度 0→1
+
   // ── 商店解锁 ──
   shopUnlocked: [],       // 已解锁商品 id（表情/特效）
   shopEffectsOn: [],      // 已启用的特效 id
@@ -606,6 +610,38 @@ function drawFootprints(ctx) {
     ctx.beginPath();
     ctx.arc(f.x, f.y, f.size * 0.6, 0, TAU);
     ctx.fill();
+  }
+}
+
+// ═══════════════════════════════════════════════
+// H 键隐藏/显示动画
+// ═══════════════════════════════════════════════
+const HIDE_PHRASES = ['嗖！', '躲起来~', '不见啦~', 'biu~'];
+const SHOW_PHRASES = ['我回来啦！', '哒哒！', '嘿！', 'tada~', '久等啦~'];
+
+function triggerHideAnim() {
+  // 已在动画中则忽略
+  if (pet.hideAnim !== 0) return;
+  if (!pet.hidden) {
+    // 进入隐藏动画：缩小+淡出+喷星尘+气泡
+    pet.hideAnim = 1;
+    pet.hideAnimT = 0;
+    pet.bubbleText = HIDE_PHRASES[Math.floor(Math.random() * HIDE_PHRASES.length)];
+    pet.bubbleTimer = 1.0;
+    for (let i = 0; i < 18; i++) spawnSparkle();
+    spawnShockwave(CFG.cx, CFG.cy, 1.2);
+    pet.squashVX += 0.5;  // 轻微挤压
+  } else {
+    // 进入显示动画：放大+淡入+冲击波+气泡
+    pet.hideAnim = -1;
+    pet.hideAnimT = 0;
+    pet.hidden = false;  // 立即恢复渲染
+    pet.bubbleText = SHOW_PHRASES[Math.floor(Math.random() * SHOW_PHRASES.length)];
+    pet.bubbleTimer = 1.4;
+    spawnShockwave(CFG.cx, CFG.cy, 1.5);
+    for (let i = 0; i < 24; i++) spawnSparkle();
+    pet.squashVY += 0.6;
+    pet.shakeIntensity = 0.4;
   }
 }
 
@@ -2078,8 +2114,27 @@ function loop(ts) {
   lastT = ts;
   const t = ts / 1000;
 
+  // ── H 键隐藏/显示动画进度推进 ──
+  if (pet.hideAnim !== 0) {
+    pet.hideAnimT += dt * 2.5;  // 0.4 秒完成
+    if (pet.hideAnimT >= 1) {
+      if (pet.hideAnim > 0) {
+        // 隐藏动画结束：真正隐藏窗口
+        pet.hidden = true;
+        pet.hideAnim = 0;
+        pet.hideAnimT = 0;
+        window.petAPI.notifyHidden();  // 通知主进程隐藏窗口
+      } else {
+        // 显示动画结束
+        pet.hideAnim = 0;
+        pet.hideAnimT = 0;
+      }
+    }
+    // 隐藏动画期间继续渲染（不能跳到 hidden 分支）
+  }
+
   // 隐藏状态：低频更新（仅维持传送光效衰减）
-  if (pet.hidden) {
+  if (pet.hidden && pet.hideAnim === 0) {
     rafSkipCounter++;
     if (rafSkipCounter < 6) {  // 6 帧抽 1，约 10Hz
       requestAnimationFrame(loop);
@@ -2161,6 +2216,26 @@ function loop(ts) {
     ctx.rotate(prog * fa.dirX * 3);
     ctx.translate(-CFG.cx, -CFG.cy);
     if (prog >= 1) { pet.flyAway = null; pet.hidden = true; }
+  }
+
+  // H 键隐藏/显示动画变换
+  if (pet.hideAnim !== 0) {
+    const p = clamp(pet.hideAnimT, 0, 1);
+    if (pet.hideAnim > 0) {
+      // 隐藏：缩小+淡出+轻微上浮
+      const s = 1 - easeOut(p) * 0.9;
+      ctx.globalAlpha *= 1 - p;
+      ctx.translate(CFG.cx, CFG.cy - p * 20);
+      ctx.scale(s, s);
+      ctx.translate(-CFG.cx, -CFG.cy);
+    } else {
+      // 显示：从0弹性放大+淡入
+      const s = easeOutCubic(p);
+      ctx.globalAlpha *= p;
+      ctx.translate(CFG.cx, CFG.cy);
+      ctx.scale(s, s);
+      ctx.translate(-CFG.cx, -CFG.cy);
+    }
   }
 
   // 从天而降
@@ -2646,6 +2721,26 @@ canvas.addEventListener('dblclick', (e) => {
 // 滚轮缩放
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
+  // ── Ctrl+滚轮：循环切换角色 ──
+  if (e.ctrlKey) {
+    const keys = Object.keys(CHARACTERS);
+    if (keys.length === 0) return;
+    const idx = keys.indexOf(pet.character);
+    const next = e.deltaY > 0
+      ? (idx + 1) % keys.length
+      : (idx - 1 + keys.length) % keys.length;
+    const newChar = keys[next];
+    if (newChar === pet.character) return;
+    startCharMorph(newChar);
+    window.petAPI.characterSync(newChar);
+    const meta = CHARACTERS[newChar];
+    setEmotion('shocked', `${meta.icon} ${meta.name}！`);
+    spawnShockwave(CFG.cx, CFG.cy, 1.2);
+    for (let i = 0; i < 15; i++) spawnSparkle();
+    pet.sleepTimer = 30;
+    return;
+  }
+  // ── 普通滚轮：缩放 ──
   const delta = e.deltaY > 0 ? -0.1 : 0.1;
   pet.zoomTarget = clamp(pet.zoomTarget + delta, 0.5, 2.0);
   if (pet.zoomTarget > 1.5) setEmotion('proud', '变大！');
@@ -2712,6 +2807,10 @@ canvas.addEventListener('mouseleave', () => { pet.hovering = false; });
 // ═══════════════════════════════════════════════
 window.petAPI.onEmotionChange((emo) => setEmotion(emo, EMOTION_TEXT[emo] || ''));
 window.petAPI.onStatusChange((st) => setStatus(st));
+
+// H 键隐藏/显示触发
+window.petAPI.onHideToggle(() => triggerHideAnim());
+
 window.petAPI.onAutoWalkToggle((v) => {
   pet.walking = v;
   if (!v) pet.walkTimer = 9999;
