@@ -65,7 +65,7 @@ const CHARACTER_LIST = Object.keys(CHARACTERS);
 // ═══════════════════════════════════════════════
 const spriteCache = {};
 
-function chromaKey(sourceImg, cropRatio) {
+function chromaKey(sourceImg, cropRatio, charDef) {
   // 裁掉边缘（去除多余绿幕）
   const crop = cropRatio || 0.06;
   const srcW = sourceImg.width * (1 - crop * 2);
@@ -134,10 +134,12 @@ function chromaKey(sourceImg, cropRatio) {
   // 严格绿幕模式：用 R/B 是否接近背景来精准区分
   // 实测 tree.jpg：背景 R=43~62，树叶 R=82~149（最小82，差20+）
   // 使用窄过渡区（hardCutoff ~ hardKeep）让边缘锐利不发糊
-  const hardCutoff = isPureGreenScreen ? 35 : 25;    // 距离 < 此值 → 完全透明
-  const hardKeep   = isPureGreenScreen ? 55 : 120;   // 距离 > 此值 → 完全保留
-  const rTol = isPureGreenScreen ? 22 : 999; // R 容差（树叶 R 比背景大 20+）
-  const bTol = isPureGreenScreen ? 22 : 999; // B 容差
+  // 阈值可从 game_config.json 的 charDef.chromaKey 覆盖，未配置则用默认值
+  const ck = (charDef && charDef.chromaKey) || {};
+  const hardCutoff = ck.hardCutoff != null ? ck.hardCutoff : (isPureGreenScreen ? 35 : 25);    // 距离 < 此值 → 完全透明
+  const hardKeep   = ck.hardKeep   != null ? ck.hardKeep   : (isPureGreenScreen ? 55 : 120);   // 距离 > 此值 → 完全保留
+  const rTol = ck.rTol != null ? ck.rTol : (isPureGreenScreen ? 22 : 999); // R 容差（树叶 R 比背景大 20+）
+  const bTol = ck.bTol != null ? ck.bTol : (isPureGreenScreen ? 22 : 999); // B 容差
 
   for (let i = 0; i < d.length; i += 4) {
     const r = d[i], g = d[i + 1], b = d[i + 2];
@@ -217,7 +219,7 @@ function loadSprites() {
     img.onload = () => {
       // 坤坤图片有右下角水印，裁掉更多边缘
       const cropRatio = def.cropRatio || 0.08;
-      const keyed = chromaKey(img, cropRatio);
+      const keyed = chromaKey(img, cropRatio, def);
       spriteCache[key] = keyed;
       console.log(`[Sprite] Loaded: ${key} (${keyed.width}x${keyed.height})`);
       // 调试：保存抠图结果到文件

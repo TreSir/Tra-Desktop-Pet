@@ -4,6 +4,16 @@ const fs = require('fs');
 const { spawn } = require('child_process');
 const LanManager = require('./lan.js');
 
+// ── userData 重定向（必须在所有 app.getPath('userData') 之前执行）──
+// 把用户数据目录重定向到项目内 .userdata/，避免沙盒限制访问 AppData
+const USER_DATA_DIR = path.join(__dirname, '.userdata');
+try {
+  if (!fs.existsSync(USER_DATA_DIR)) fs.mkdirSync(USER_DATA_DIR, { recursive: true });
+  app.setPath('userData', USER_DATA_DIR);
+} catch (e) {
+  console.warn('[MAIN] Cannot redirect userData:', e.message);
+}
+
 // ── 加载统一配置文件 ──
 let GAME_CONFIG = { characters: {}, shop: { food: [], emotion: [], effect: [] } };
 try {
@@ -76,8 +86,24 @@ function startMouseHook() {
   if (mouseHookProc) return;
   // 用 Base64 编码避免 shell 双引号转义问题（PowerShell -EncodedCommand 需要 UTF-16LE）
   const encoded = Buffer.from(MOUSE_HOOK_SCRIPT, 'utf16le').toString('base64');
-  mouseHookProc = spawn('powershell.exe', ['-NoProfile', '-EncodedCommand', encoded], {
-    stdio: ['ignore', 'pipe', 'ignore'],
+  // spawn 不继承完整 PATH，用绝对路径定位 powershell.exe，避免 ENOENT
+  const psExe = path.join(
+    process.env.windir || process.env.SystemRoot || 'C:\\Windows',
+    'System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+  );
+  try {
+    mouseHookProc = spawn(psExe, ['-NoProfile', '-EncodedCommand', encoded], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch (e) {
+    console.error('[FOOD] PowerShell hook spawn failed:', e.message);
+    mouseHookProc = null;
+    return;
+  }
+  // spawn 异步失败（如 ENOENT）会触发 error 事件，需清理引用
+  mouseHookProc.on('error', (e) => {
+    console.error('[FOOD] PowerShell hook error:', e.message);
+    mouseHookProc = null;
   });
   let buf = '';
   mouseHookProc.stdout.on('data', (chunk) => {
@@ -95,7 +121,6 @@ function startMouseHook() {
       }
     }
   });
-  mouseHookProc.on('error', (e) => console.error('[FOOD] PowerShell hook error:', e.message));
   console.log('[FOOD] Mouse hook started (Ctrl+LeftClick)');
 }
 
@@ -233,7 +258,7 @@ function createSettingsWindow() {
     resizable: false,
     minimizable: false,
     maximizable: false,
-    hasShadow: true,
+    hasShadow: false,
     roundedCorners: true,
     backgroundColor: '#00000000',
     webPreferences: {
@@ -373,7 +398,7 @@ function createShopWindow() {
     resizable: false,
     minimizable: false,
     maximizable: false,
-    hasShadow: true,
+    hasShadow: false,
     roundedCorners: true,
     backgroundColor: '#00000000',
     webPreferences: {
@@ -517,14 +542,6 @@ const CHARACTER_OPTIONS = Object.entries(GAME_CONFIG.characters || {}).map(([key
 }));
 
 // ── 角色持久化 ──
-// 把 userData 重定向到项目目录下，避免沙盒限制访问 AppData
-const USER_DATA_DIR = path.join(__dirname, '.userdata');
-try {
-  if (!fs.existsSync(USER_DATA_DIR)) fs.mkdirSync(USER_DATA_DIR, { recursive: true });
-  app.setPath('userData', USER_DATA_DIR);
-} catch (e) {
-  console.warn('[MAIN] Cannot redirect userData:', e.message);
-}
 let currentCharacter = 'slime';
 const charConfigPath = path.join(app.getPath('userData'), 'character.json');
 
@@ -956,7 +973,21 @@ ipcMain.on('physics-drop', (_e, vx, vy) => {
     if (nx < -marginX) { nx = -marginX; velX = -velX * bounce; }
     if (nx > sw - w + marginX) { nx = sw - w + marginX; velX = -velX * bounce; }
 
-    mainWindow.setPosition(nx, ny);
+    // 坐标合法性校验：多显示器切换/DPI 变化可能导致 NaN，避免 setPosition 抛错+定时器泄漏
+    if (!Number.isFinite(nx) || !Number.isFinite(ny)) {
+      console.warn('[PHYSICS] Invalid position, aborting:', nx, ny);
+      clearInterval(physicsTimer);
+      physicsTimer = null;
+      return;
+    }
+    try {
+      mainWindow.setPosition(Math.round(nx), Math.round(ny));
+    } catch (e) {
+      console.warn('[PHYSICS] setPosition failed, aborting:', e.message);
+      clearInterval(physicsTimer);
+      physicsTimer = null;
+      return;
+    }
 
     // 静止判定
     if (Math.abs(velY) < 0.8 && Math.abs(velX) < 0.3 && ny >= floorY - 1) {

@@ -8,6 +8,7 @@
   html, body {
     height: 100%;
     overflow: hidden;
+    border-radius: 14px;
   }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", "Microsoft YaHei", sans-serif;
@@ -21,8 +22,10 @@
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
     position: relative;
-    border-radius: 12px;
+    border-radius: 14px;
     overflow: hidden;
+    /* 用 CSS 阴影替代系统矩形阴影，使其跟随圆角 */
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.22), 0 2px 8px rgba(0, 0, 0, 0.12);
   }
 
   /* ── 拖动区 ── */

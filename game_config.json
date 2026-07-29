@@ -62,7 +62,13 @@
       "icon": "🌳",
       "glowColor": [80, 200, 100],
       "particleHue": 120,
-      "spriteSrc": "assets/tree.jpg"
+      "spriteSrc": "assets/tree.jpg",
+      "chromaKey": {
+        "hardCutoff": 25,
+        "hardKeep": 120,
+        "rTol": 22,
+        "bTol": 22
+      }
     }
   },
 
