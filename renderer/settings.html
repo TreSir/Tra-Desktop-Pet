@@ -227,6 +227,14 @@
     color: #86868b;
     letter-spacing: 0.02em;
   }
+  .save-hint {
+    color: #34c759;
+    font-weight: 600;
+    opacity: 0;
+    transition: opacity 0.3s;
+    margin-left: 4px;
+  }
+  .save-hint.show { opacity: 1; }
 </style>
 </head>
 <body>
@@ -332,7 +340,7 @@
     </div>
   </div>
 
-  <div class="footer">设置自动保存 · 关闭即应用</div>
+  <div class="footer">设置自动保存 · 关闭即应用 <span id="saveHint" class="save-hint"></span></div>
 </div>
 
 <script>
@@ -354,6 +362,15 @@ function formatVal(key, v) {
   return String(v);
 }
 
+let saveHintTimer = null;
+function markSaved() {
+  const hint = document.getElementById('saveHint');
+  hint.textContent = '✓ 已保存';
+  hint.classList.add('show');
+  clearTimeout(saveHintTimer);
+  saveHintTimer = setTimeout(() => hint.classList.remove('show'), 1000);
+}
+
 async function init() {
   const settings = await window.settingsAPI.getAll();
   console.log('[SETTINGS] loaded:', settings);
@@ -368,6 +385,7 @@ async function init() {
       const val = parseFloat(el.value);
       valEl.textContent = formatVal(id, val);
       window.settingsAPI.set(id, val);
+      markSaved();
     });
   }
 
@@ -378,6 +396,7 @@ async function init() {
     el.addEventListener('click', () => {
       el.classList.toggle('on');
       window.settingsAPI.set(key, el.classList.contains('on'));
+      markSaved();
     });
   }
 

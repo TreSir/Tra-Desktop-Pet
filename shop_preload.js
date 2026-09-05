@@ -12,4 +12,9 @@ contextBridge.exposeInMainWorld('shopAPI', {
   close: () => ipcRenderer.send('shop-close'),
   // 监听余额变化（购买后实时更新）
   onCoinsUpdate: (cb) => ipcRenderer.on('coins-update', (_e, val) => cb(val)),
+  // ── 商店主题 ──
+  getTheme: () => ipcRenderer.invoke('shop-get-theme'),
+  setTheme: (theme) => ipcRenderer.send('shop-set-theme', theme),
+  // 监听主题变化（托盘菜单切换时实时应用）
+  onThemeChanged: (cb) => ipcRenderer.on('shop-theme-changed', (_e, val) => cb(val)),
 });

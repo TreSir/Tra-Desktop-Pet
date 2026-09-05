@@ -257,363 +257,6 @@ function hslToRgb(h, s, l) {
 }
 
 // ═══════════════════════════════════════════════
-// 通用粒子池（freeIndex 栈优化，避免 O(N) 线性扫描）
-// ═══════════════════════════════════════════════
-const PARTICLE_POOL_SIZE = 150;
-const particlePool = [];
-const particleFreeStack = [];  // 空闲槽位索引栈
-for (let i = 0; i < PARTICLE_POOL_SIZE; i++) {
-  particlePool.push({ active: false, x:0, y:0, vx:0, vy:0, size:0, life:0, decay:0, hue:0 });
-  particleFreeStack.push(i);  // 初始全部空闲
-}
-
-function spawnParticle() {
-  if (particleFreeStack.length === 0) return;  // 池满
-  const idx = particleFreeStack.pop();
-  const p = particlePool[idx];
-  const a = Math.random() * TAU;
-  const r = CFG.r * (0.5 + Math.random() * 0.55);
-  p.active = true;
-  p.x = CFG.cx + Math.cos(a) * r;
-  p.y = CFG.cy + Math.sin(a) * r * 0.85;
-  p.vx = (Math.random() - 0.5) * 0.6;
-  p.vy = -0.3 - Math.random() * 0.8;
-  p.size = 0.6 + Math.random() * 2.2;
-  p.life = 1;
-  p.decay = 0.005 + Math.random() * 0.013;
-  p.hue = 178 + Math.random() * 34;
-  p._idx = idx;  // 记住索引便于回收
-}
-
-function updateParticles(dt, rate) {
-  if (Math.random() < rate * dt * 0.7) spawnParticle();
-  for (let i = 0; i < particlePool.length; i++) {
-    const p = particlePool[i];
-    if (!p.active) continue;
-    p.x += p.vx; p.y += p.vy;
-    p.vy -= 0.007; p.vx *= 0.99;
-    p.life -= p.decay;
-    if (p.life <= 0) {
-      p.active = false;
-      particleFreeStack.push(i);  // 回收到栈
-    }
-  }
-}
-
-function drawParticles(ctx) {
-  for (let i = 0; i < particlePool.length; i++) {
-    const p = particlePool[i];
-    if (!p.active) continue;
-    const a = p.life * 0.8;
-    const h = p.hue | 0;
-    ctx.fillStyle = `hsla(${h},100%,55%,${a * 0.06})`;
-    ctx.beginPath(); ctx.arc(p.x, p.y, p.size * 5, 0, TAU); ctx.fill();
-    ctx.fillStyle = `hsla(${h},100%,65%,${a * 0.15})`;
-    ctx.beginPath(); ctx.arc(p.x, p.y, p.size * 2.8, 0, TAU); ctx.fill();
-    ctx.fillStyle = `hsla(${h},100%,82%,${a})`;
-    ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, TAU); ctx.fill();
-  }
-}
-
-// ═══════════════════════════════════════════════
-// 心形粒子
-// ═══════════════════════════════════════════════
-function spawnHeart() {
-  pet.hearts.push({
-    x: CFG.cx + (Math.random() - 0.5) * 40,
-    y: CFG.cy - 20,
-    vx: (Math.random() - 0.5) * 1.5,
-    vy: -1.5 - Math.random() * 1,
-    size: 6 + Math.random() * 5,
-    life: 1,
-    rot: (Math.random() - 0.5) * 0.5,
-  });
-}
-
-function updateHearts(dt) {
-  for (let i = pet.hearts.length - 1; i >= 0; i--) {
-    const h = pet.hearts[i];
-    h.x += h.vx; h.y += h.vy;
-    h.vy *= 0.97; h.vx *= 0.98;
-    h.life -= dt * 0.8;
-    h.rot += dt * 2;
-    if (h.life <= 0) pet.hearts.splice(i, 1);
-  }
-}
-
-function drawHeart(ctx, x, y, size, alpha, rot) {
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.rotate(rot);
-  ctx.scale(size / 10, size / 10);
-  ctx.globalAlpha = alpha;
-  // 心形路径
-  ctx.beginPath();
-  ctx.moveTo(0, 3);
-  ctx.bezierCurveTo(-5, -3, -10, 0, 0, 8);
-  ctx.bezierCurveTo(10, 0, 5, -3, 0, 3);
-  ctx.closePath();
-  // 辉光
-  ctx.shadowColor = 'rgba(255,100,160,0.8)';
-  ctx.shadowBlur = 8;
-  ctx.fillStyle = 'rgba(255,80,140,0.9)';
-  ctx.fill();
-  ctx.restore();
-}
-
-function drawHearts(ctx) {
-  for (const h of pet.hearts) {
-    drawHeart(ctx, h.x, h.y, h.size, h.life * 0.9, h.rot);
-  }
-}
-
-// ═══════════════════════════════════════════════
-// 汗滴
-// ═══════════════════════════════════════════════
-function spawnSweat() {
-  pet.sweatDrops.push({
-    x: CFG.cx + 30 + Math.random() * 10,
-    y: CFG.cy - 30,
-    vy: 0.5,
-    size: 3 + Math.random() * 2,
-    life: 1,
-  });
-}
-
-function updateSweat(dt) {
-  for (let i = pet.sweatDrops.length - 1; i >= 0; i--) {
-    const s = pet.sweatDrops[i];
-    s.vy += 0.15;
-    s.y += s.vy;
-    s.life -= dt * 0.6;
-    if (s.life <= 0 || s.y > CFG.cy + 60) pet.sweatDrops.splice(i, 1);
-  }
-}
-
-function drawSweat(ctx) {
-  for (const s of pet.sweatDrops) {
-    ctx.fillStyle = `rgba(120,200,255,${s.life * 0.15})`;
-    ctx.beginPath(); ctx.arc(s.x, s.y, s.size * 2, 0, TAU); ctx.fill();
-    ctx.fillStyle = `rgba(150,220,255,${s.life * 0.85})`;
-    ctx.beginPath();
-    ctx.ellipse(s.x, s.y, s.size * 0.6, s.size, 0, 0, TAU);
-    ctx.fill();
-  }
-}
-
-// ═══════════════════════════════════════════════
-// Zzz 睡眠粒子
-// ═══════════════════════════════════════════════
-function spawnZzz() {
-  pet.zzz.push({
-    x: CFG.cx + 25,
-    y: CFG.cy - 40,
-    vx: 0.3,
-    vy: -0.8,
-    size: 10 + Math.random() * 6,
-    life: 1,
-    wobble: 0,
-  });
-}
-
-function updateZzz(dt) {
-  for (let i = pet.zzz.length - 1; i >= 0; i--) {
-    const z = pet.zzz[i];
-    z.wobble += dt * 3;
-    z.x += z.vx + Math.sin(z.wobble) * 0.5;
-    z.y += z.vy;
-    z.vy *= 0.99;
-    z.life -= dt * 0.4;
-    if (z.life <= 0) pet.zzz.splice(i, 1);
-  }
-}
-
-function drawZzz(ctx) {
-  for (const z of pet.zzz) {
-    ctx.save();
-    ctx.globalAlpha = z.life * 0.7;
-    ctx.font = `bold ${z.size}px "Microsoft YaHei",sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.shadowColor = 'rgba(0,200,255,0.5)';
-    ctx.shadowBlur = 6;
-    ctx.fillStyle = 'rgba(180,230,255,0.9)';
-    ctx.fillText('Z', z.x, z.y);
-    ctx.restore();
-  }
-}
-
-// ═══════════════════════════════════════════════
-// 冲击裂缝粒子
-// ═══════════════════════════════════════════════
-function spawnCracks(x, y, count, intensity) {
-  for (let i = 0; i < count; i++) {
-    const ang = Math.random() * TAU;
-    const speed = 2 + Math.random() * 5 * intensity;
-    pet.cracks.push({
-      x: x, y: y,
-      vx: Math.cos(ang) * speed,
-      vy: Math.sin(ang) * speed - 1,
-      size: 2 + Math.random() * 4,
-      life: 1,
-      rot: ang,
-    });
-  }
-}
-
-function updateCracks(dt) {
-  for (let i = pet.cracks.length - 1; i >= 0; i--) {
-    const c = pet.cracks[i];
-    c.vy += 0.3;
-    c.x += c.vx; c.y += c.vy;
-    c.vx *= 0.95;
-    c.life -= dt * 1.5;
-    if (c.life <= 0) pet.cracks.splice(i, 1);
-  }
-}
-
-function drawCracks(ctx) {
-  for (const c of pet.cracks) {
-    ctx.save();
-    ctx.translate(c.x, c.y);
-    ctx.rotate(c.rot);
-    ctx.globalAlpha = c.life;
-    ctx.fillStyle = `rgba(0,220,255,${c.life * 0.3})`;
-    ctx.beginPath();
-    ctx.arc(0, 0, c.size * 2, 0, TAU);
-    ctx.fill();
-    ctx.fillStyle = `rgba(150,240,255,${c.life})`;
-    ctx.fillRect(-c.size * 0.5, -c.size * 0.2, c.size, c.size * 0.4);
-    ctx.restore();
-  }
-}
-
-// ═══════════════════════════════════════════════
-// 星尘闪烁（开心/兴奋时）
-// ═══════════════════════════════════════════════
-function spawnSparkle(x, y) {
-  pet.sparkles.push({
-    x: x || CFG.cx + (Math.random() - 0.5) * 80,
-    y: y || CFG.cy + (Math.random() - 0.5) * 60,
-    life: 1,
-    size: 3 + Math.random() * 5,
-    rot: Math.random() * TAU,
-  });
-}
-
-function updateSparkles(dt) {
-  for (let i = pet.sparkles.length - 1; i >= 0; i--) {
-    const s = pet.sparkles[i];
-    s.life -= dt * 1.2;
-    s.rot += dt * 4;
-    if (s.life <= 0) pet.sparkles.splice(i, 1);
-  }
-}
-
-function drawSparkles(ctx) {
-  for (const s of pet.sparkles) {
-    ctx.save();
-    ctx.translate(s.x, s.y);
-    ctx.rotate(s.rot);
-    ctx.globalAlpha = s.life;
-    const sz = s.size * s.life;
-    // 四角星
-    ctx.fillStyle = `rgba(255,240,180,${s.life * 0.9})`;
-    ctx.shadowColor = 'rgba(255,220,100,0.8)';
-    ctx.shadowBlur = 6;
-    ctx.beginPath();
-    ctx.moveTo(0, -sz);
-    ctx.lineTo(sz * 0.3, -sz * 0.3);
-    ctx.lineTo(sz, 0);
-    ctx.lineTo(sz * 0.3, sz * 0.3);
-    ctx.lineTo(0, sz);
-    ctx.lineTo(-sz * 0.3, sz * 0.3);
-    ctx.lineTo(-sz, 0);
-    ctx.lineTo(-sz * 0.3, -sz * 0.3);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
-  }
-}
-
-// ═══════════════════════════════════════════════
-// 音符粒子（开心时飘出）
-// ═══════════════════════════════════════════════
-const NOTE_SYMBOLS = ['♪', '♫', '♬', '♩', '♭'];
-function spawnNote() {
-  pet.notes.push({
-    x: CFG.cx + (Math.random() - 0.5) * 30,
-    y: CFG.cy - 30,
-    vx: (Math.random() - 0.5) * 0.8,
-    vy: -1.2 - Math.random() * 0.6,
-    size: 12 + Math.random() * 8,
-    life: 1,
-    rot: (Math.random() - 0.5) * 0.4,
-    sym: NOTE_SYMBOLS[(Math.random() * NOTE_SYMBOLS.length) | 0],
-    hue: 280 + Math.random() * 80,
-  });
-}
-
-function updateNotes(dt) {
-  for (let i = pet.notes.length - 1; i >= 0; i--) {
-    const n = pet.notes[i];
-    n.x += n.vx + Math.sin(n.life * 8) * 0.3;
-    n.y += n.vy;
-    n.vy *= 0.99;
-    n.life -= dt * 0.5;
-    if (n.life <= 0) pet.notes.splice(i, 1);
-  }
-}
-
-function drawNotes(ctx) {
-  for (const n of pet.notes) {
-    ctx.save();
-    ctx.globalAlpha = n.life * 0.85;
-    ctx.font = `bold ${n.size}px serif`;
-    ctx.textAlign = 'center';
-    ctx.translate(n.x, n.y);
-    ctx.rotate(n.rot);
-    ctx.shadowColor = `hsla(${n.hue},80%,60%,0.6)`;
-    ctx.shadowBlur = 6;
-    ctx.fillStyle = `hsla(${n.hue},80%,70%,${n.life})`;
-    ctx.fillText(n.sym, 0, 0);
-    ctx.restore();
-  }
-}
-
-// ═══════════════════════════════════════════════
-// 脚印（行走时留下）
-// ═══════════════════════════════════════════════
-function spawnFootprint() {
-  pet.footprints.push({
-    x: CFG.cx + (Math.random() - 0.5) * 10,
-    y: CFG.cy + 45 + Math.random() * 5,
-    life: 1,
-    size: 4 + Math.random() * 2,
-  });
-}
-
-function updateFootprints(dt) {
-  for (let i = pet.footprints.length - 1; i >= 0; i--) {
-    const f = pet.footprints[i];
-    f.life -= dt * 0.6;
-    if (f.life <= 0) pet.footprints.splice(i, 1);
-  }
-}
-
-function drawFootprints(ctx) {
-  for (const f of pet.footprints) {
-    ctx.fillStyle = `rgba(0,180,255,${f.life * 0.2})`;
-    ctx.beginPath();
-    ctx.arc(f.x, f.y, f.size * (2 - f.life), 0, TAU);
-    ctx.fill();
-    ctx.fillStyle = `rgba(120,220,255,${f.life * 0.4})`;
-    ctx.beginPath();
-    ctx.arc(f.x, f.y, f.size * 0.6, 0, TAU);
-    ctx.fill();
-  }
-}
-
-// ═══════════════════════════════════════════════
 // H 键隐藏/显示动画
 // ═══════════════════════════════════════════════
 const HIDE_PHRASES = ['嗖！', '躲起来~', '不见啦~', 'biu~'];
@@ -643,149 +286,6 @@ function triggerHideAnim() {
     pet.squashVY += 0.6;
     pet.shakeIntensity = 0.4;
   }
-}
-
-// ═══════════════════════════════════════════════
-// 冲击波环（着陆/重击时）
-// ═══════════════════════════════════════════════
-function spawnShockwave(x, y, intensity) {
-  pet.shockwaves.push({
-    x, y, r: 5, maxR: 40 + intensity * 20, life: 1, intensity,
-  });
-}
-
-function updateShockwaves(dt) {
-  for (let i = pet.shockwaves.length - 1; i >= 0; i--) {
-    const s = pet.shockwaves[i];
-    s.r += dt * 120;
-    s.life -= dt * 2;
-    if (s.life <= 0 || s.r > s.maxR) pet.shockwaves.splice(i, 1);
-  }
-}
-
-function drawShockwaves(ctx) {
-  for (const s of pet.shockwaves) {
-    ctx.strokeStyle = `rgba(0,220,255,${s.life * 0.5})`;
-    ctx.lineWidth = 2 * s.life;
-    ctx.beginPath();
-    ctx.arc(s.x, s.y, s.r, 0, TAU);
-    ctx.stroke();
-    ctx.strokeStyle = `rgba(150,240,255,${s.life * 0.3})`;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.arc(s.x, s.y, s.r * 0.7, 0, TAU);
-    ctx.stroke();
-  }
-}
-
-// ═══════════════════════════════════════════════
-// 思考气泡（待机时随机想法）
-// ═══════════════════════════════════════════════
-const THOUGHT_ICONS = ['💭', '❓', '❗', '💡', '⭐', '🌟', '💤', '🍖', '🎮', '❤️', '🎵', '🌈'];
-const THOUGHT_TEXTS = ['想吃东西…', '好无聊~', '在想什么？', '嘿嘿~', '困了…', '饿了！', '想玩耍！', '你好呀~', '哼哼~', '在发呆…', '想睡觉…', '好开心~', '咦？', '咕咕咕…'];
-
-function spawnThought() {
-  const isIcon = Math.random() < 0.4;
-  pet.currentThought = {
-    type: isIcon ? 'icon' : 'text',
-    content: isIcon
-      ? THOUGHT_ICONS[(Math.random() * THOUGHT_ICONS.length) | 0]
-      : THOUGHT_TEXTS[(Math.random() * THOUGHT_TEXTS.length) | 0],
-    life: 1,
-    t: 0,
-  };
-}
-
-function updateThoughts(dt) {
-  // 睡觉时显示梦境
-  if (pet.sleeping) {
-    pet.thinkTimer -= dt;
-    if (pet.thinkTimer <= 0) {
-      pet.thinkTimer = 5 + Math.random() * 8;
-      if (Math.random() < 0.5) {
-        const dreams = ['🍖', '🍬', '🎮', '⭐', '🌈', '💝', '🎵', '🍰'];
-        pet.currentThought = {
-          type: 'icon',
-          content: dreams[(Math.random() * dreams.length) | 0],
-          life: 0,
-          t: 0,
-        };
-      }
-    }
-    if (pet.currentThought) {
-      pet.currentThought.t += dt;
-      if (pet.currentThought.t < 0.5) {
-        pet.currentThought.life = pet.currentThought.t / 0.5;
-      } else if (pet.currentThought.t > 3) {
-        pet.currentThought.life = Math.max(0, 1 - (pet.currentThought.t - 3) / 0.5);
-      } else {
-        pet.currentThought.life = 1;
-      }
-      if (pet.currentThought.t > 3.5) pet.currentThought = null;
-    }
-    return;
-  }
-
-  if (pet.dragging || pet.falling || pet.dancing || pet.eating) {
-    pet.currentThought = null;
-    return;
-  }
-  pet.thinkTimer -= dt;
-  if (pet.thinkTimer <= 0) {
-    pet.thinkTimer = 10 + Math.random() * 15;
-    if (Math.random() < 0.6) spawnThought();
-  }
-  if (pet.currentThought) {
-    pet.currentThought.t += dt;
-    if (pet.currentThought.t < 0.3) {
-      pet.currentThought.life = pet.currentThought.t / 0.3;
-    } else if (pet.currentThought.t > 2.5) {
-      pet.currentThought.life = Math.max(0, 1 - (pet.currentThought.t - 2.5) / 0.5);
-    } else {
-      pet.currentThought.life = 1;
-    }
-    if (pet.currentThought.t > 3) pet.currentThought = null;
-  }
-}
-
-function drawThoughts(ctx) {
-  if (!pet.currentThought) return;
-  const th = pet.currentThought;
-  const a = th.life;
-  const bx = CFG.cx + 35, by = CFG.cy - 55;
-
-  ctx.save();
-
-  // 小圆点连接
-  ctx.fillStyle = `rgba(12,12,26,${a * 0.8})`;
-  ctx.beginPath(); ctx.arc(bx - 18, by + 8, 2.5, 0, TAU); ctx.fill();
-  ctx.beginPath(); ctx.arc(bx - 12, by + 4, 3.5, 0, TAU); ctx.fill();
-
-  // 气泡
-  ctx.fillStyle = `rgba(12,12,26,${a * 0.9})`;
-  ctx.strokeStyle = `rgba(0,200,255,${a * 0.5})`;
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.ellipse(bx, by, 22, 16, 0, 0, TAU);
-  ctx.fill();
-  ctx.stroke();
-
-  // 内容
-  ctx.globalAlpha = a;
-  if (th.type === 'icon') {
-    ctx.font = '16px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(th.content, bx, by);
-  } else {
-    ctx.font = '9px "Microsoft YaHei",sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = `rgba(175,228,255,1)`;
-    ctx.fillText(th.content, bx, by);
-  }
-
-  ctx.restore();
 }
 
 // ═══════════════════════════════════════════════
@@ -873,15 +373,17 @@ function startDance() {
 // ═══════════════════════════════════════════════
 // 进食系统
 // ═══════════════════════════════════════════════
-function feedPet() {
+function feedPet(effect) {
   if (pet.sleeping) {
     pet.sleeping = false;
     setEmotion('happy', '好吃的！');
   }
+  const energyGain = effect && effect.energy != null ? effect.energy : 30;
+  const moodGain = effect && effect.mood != null ? effect.mood : 15;
   pet.eating = true;
   pet.eatTimer = 1.5;
-  pet.energy = clamp(pet.energy + 30, 0, 100);
-  pet.mood = clamp(pet.mood + 15, 0, 100);
+  pet.energy = clamp(pet.energy + energyGain, 0, 100);
+  pet.mood = clamp(pet.mood + moodGain, 0, 100);
   setEmotion('love', '好好吃~');
   pet.sleepTimer = 30;
   for (let i = 0; i < 3; i++) spawnHeart();
@@ -930,6 +432,7 @@ const RUNTIME = {
   eyeTrack: true,
   blink: true,
   particles: true,
+  shopTheme: 'sweet',   // 全局主题：sweet=甜暖风 / pixel=像素风
 };
 let foodMoveAccumX = 0, foodMoveAccumY = 0; // 累积移动量，减少 IPC 频率
 
@@ -972,7 +475,7 @@ function updateFoodSeeking(dt) {
     pet._foodSpeedX = 0;
     pet._foodSpeedY = 0;
     pet._foodAccelT = 0;
-    feedPet();      // 触发进食交互
+    feedPet(target.effect);      // 触发进食交互（商店食物带独立效果）
     return;
   }
 
@@ -1674,7 +1177,7 @@ function lerpParams(dt) {
 }
 
 function updateBlink(dt) {
-  if (pet.sleeping) {
+  if (pet.sleeping || !RUNTIME.blink) {
     pet.blinkT = 0;
     pet.blinkPhase = 0;
     return;
@@ -2103,6 +1606,7 @@ function updateSpringPhysics(dt, t) {
 // ═══════════════════════════════════════════════
 let lastT = null;
 let rafSkipCounter = 0;
+let sleepDtAccum = 0;
 function loop(ts) {
   // 首帧 / 异常时间戳保护
   if (lastT === null || ts < lastT) {
@@ -2110,9 +1614,10 @@ function loop(ts) {
     requestAnimationFrame(loop);
     return;
   }
-  const dt = Math.min(0.05, (ts - lastT) / 1000);
+  const rawDt = Math.min(0.05, (ts - lastT) / 1000);
   lastT = ts;
   const t = ts / 1000;
+  let dt = rawDt;
 
   // ── H 键隐藏/显示动画进度推进 ──
   if (pet.hideAnim !== 0) {
@@ -2133,6 +1638,9 @@ function loop(ts) {
     // 隐藏动画期间继续渲染（不能跳到 hidden 分支）
   }
 
+  // 睡眠/隐藏时暂停光标 IPC；显示且清醒时恢复
+  syncCursorPoll();
+
   // 隐藏状态：低频更新（仅维持传送光效衰减）
   if (pet.hidden && pet.hideAnim === 0) {
     rafSkipCounter++;
@@ -2145,6 +1653,22 @@ function loop(ts) {
     if (pet.teleportGlow < 0) pet.teleportGlow = 0;
     requestAnimationFrame(loop);
     return;
+  }
+
+  // 睡眠状态：约 20Hz 合并更新，逻辑用累计 dt，动画速度正常
+  if (pet.sleeping && pet.hideAnim === 0 && !pet.dragging && !pet.falling) {
+    sleepDtAccum += rawDt;
+    rafSkipCounter++;
+    if (rafSkipCounter < 3) {
+      requestAnimationFrame(loop);
+      return;
+    }
+    rafSkipCounter = 0;
+    dt = Math.min(0.05, sleepDtAccum);
+    sleepDtAccum = 0;
+  } else {
+    rafSkipCounter = 0;
+    sleepDtAccum = 0;
   }
 
   ctx.clearRect(0, 0, CFG.W, CFG.H);
@@ -2573,6 +2097,13 @@ function drawCoins(ctx) {
 
 canvas.addEventListener('mousemove', (e) => {
   if (e.buttons !== 1) {
+    // 兜底：mouseup 丢失（拖拽中鼠标移出窗口后松开）时恢复拖拽状态
+    // 穿透模式下 mousemove 仍会被 forward 转发，所以这里能捕获到
+    if (pet.dragging) {
+      pet.dragging = false;
+      pet.mood = clamp(pet.mood - 2, 0, 100);
+      setEmotion('relaxed', '');
+    }
     // hovering 范围 = mousedown 命中范围（统一用 isPetHit）
     pet.hovering = isPetHit(e.clientX, e.clientY);
 
@@ -2859,6 +2390,10 @@ window.petAPI.onSettingsChanged(({ key, value }) => {
   if (key in RUNTIME) {
     RUNTIME[key] = value;
     console.log(`[SETTINGS] applied: ${key} = ${value}`);
+    // 主题变化时重绘托盘图标
+    if (key === 'shopTheme') {
+      genTrayIcon(value);
+    }
   }
 });
 
@@ -3108,10 +2643,18 @@ window.petAPI.onPetSendSuccess(() => {
   pet.bubbleTimer = 0;
 });
 
-window.petAPI.onPetSendFail(() => {
+window.petAPI.onPetSendFail((info) => {
   pet.hidden = false;
   pet.flyAway = null;
-  setEmotion('sad', '发送失败…');
+  // 把技术性错误转成人话，让用户知道为什么失败
+  let reason = '发送失败…';
+  if (info && info.error) {
+    const err = String(info.error).toLowerCase();
+    if (err.includes('econnrefused') || err.includes('connect')) reason = '对方没接住…';
+    else if (err.includes('timeout')) reason = '连接超时…';
+    else if (err.includes('no state')) reason = '状态丢失…';
+  }
+  setEmotion('sad', reason);
   setTimeout(() => setEmotion('relaxed', ''), 3000);
 });
 
@@ -3188,31 +2731,79 @@ window.petAPI.onPetRecall(() => {
   setEmotion('happy', '回来啦！');
 });
 
-// 启动光标轮询
-window.petAPI.startCursorPoll();
+// 启动光标轮询（睡眠/隐藏时暂停，降低主进程 IPC 开销）
+let cursorPollActive = false;
+function syncCursorPoll() {
+  // 仅当"可见 + 清醒 + 开启了眼球追踪"时才需要 80ms 轮询光标，
+  // 关闭追踪后立即暂停，避免无意义的 IPC 与主进程 getCursorScreenPoint 开销
+  const need = !pet.hidden && !pet.sleeping && RUNTIME.eyeTrack;
+  if (need && !cursorPollActive) {
+    window.petAPI.startCursorPoll();
+    cursorPollActive = true;
+  } else if (!need && cursorPollActive) {
+    window.petAPI.stopCursorPoll();
+    cursorPollActive = false;
+  }
+}
+syncCursorPoll();
 
 // ═══════════════════════════════════════════════
-// 托盘图标
-// ═══════════════════════════════════════════════
-function genTrayIcon() {
+// 托盘图标（随主题：甜暖风=圆润粉球，像素风=8-bit 方块）
+function genTrayIcon(theme) {
   const c = document.createElement('canvas');
   c.width = 32; c.height = 32;
   const x = c.getContext('2d');
-  x.shadowColor = 'rgba(0,200,255,0.8)';
-  x.shadowBlur = 5;
-  x.fillStyle = '#0a0a14';
-  x.beginPath(); x.ellipse(16, 18, 10, 9, 0, 0, TAU); x.fill();
-  x.strokeStyle = 'rgba(0,180,255,0.5)';
-  x.lineWidth = 1; x.stroke();
-  x.shadowColor = 'rgba(200,240,255,0.9)';
-  x.shadowBlur = 4;
-  x.fillStyle = '#e6f8ff';
-  x.beginPath(); x.arc(12, 16, 1.8, 0, TAU); x.arc(20, 16, 1.8, 0, TAU); x.fill();
+  const px = (cx, cy, size, color) => { x.fillStyle = color; x.fillRect(cx, cy, size, size); };
+
+  if (theme === 'pixel') {
+    // ── 8-bit 像素桌宠：青蓝底 + 深色描边 + 两只方块眼 ──
+    x.fillStyle = '#0a0a14';                       // 描边
+    x.fillRect(5, 4, 22, 20);
+    x.fillRect(3, 10, 4, 8);
+    x.fillRect(25, 10, 4, 8);
+    x.fillStyle = '#22d3ee';                        // 主色
+    x.fillRect(7, 6, 18, 16);
+    x.fillStyle = '#7de8ff';                        // 头顶高光
+    x.fillRect(7, 6, 18, 3);
+    px(11, 11, 4, '#0a0a14');
+    px(17, 11, 4, '#0a0a14');
+    px(12, 12, 2, '#e6f8ff');
+    px(18, 12, 2, '#e6f8ff');
+    x.fillStyle = 'rgba(0,0,0,0.25)';               // 底部阴影
+    x.fillRect(8, 22, 16, 2);
+  } else {
+    // ── 甜暖风：圆润粉色小圆宠 + 粉色光晕 ──
+    x.shadowColor = 'rgba(255,122,166,0.9)';
+    x.shadowBlur = 6;
+    x.fillStyle = '#ff7aa6';                        // 玫瑰粉身体
+    x.beginPath(); x.ellipse(16, 18, 10, 9, 0, 0, TAU); x.fill();
+    x.shadowBlur = 0;
+    x.fillStyle = '#fff0f5';                        // 头顶高光
+    x.beginPath(); x.ellipse(13, 14, 4, 3, -0.3, 0, TAU); x.fill();
+    x.fillStyle = '#5d3a3a';                        // 眼睛
+    x.beginPath(); x.arc(12, 16, 1.9, 0, TAU); x.arc(20, 16, 1.9, 0, TAU); x.fill();
+    x.fillStyle = '#ffffff';                        // 眼睛高光
+    x.beginPath(); x.arc(12.7, 15.4, 0.7, 0, TAU); x.arc(20.7, 15.4, 0.7, 0, TAU); x.fill();
+    x.fillStyle = '#ffb37e';                        // 腮红
+    x.beginPath(); x.arc(9, 20, 1.6, 0, TAU); x.arc(23, 20, 1.6, 0, TAU); x.fill();
+  }
   window.petAPI.setTrayIcon(c.toDataURL('image/png'));
 }
 
 // ═══════════════════════════════════════════════
 // 初始化
 // ═══════════════════════════════════════════════
-genTrayIcon();
+(async () => {
+  // 启动时拉取已保存设置播种 RUNTIME（修复重启后设置回退默认值的问题）
+  try {
+    const s = await window.petAPI.getSettings();
+    for (const k of Object.keys(RUNTIME)) {
+      if (s[k] !== undefined) RUNTIME[k] = s[k];
+    }
+    console.log('[SETTINGS] seeded from saved settings');
+  } catch (e) {
+    console.warn('[SETTINGS] seed failed:', e.message);
+  }
+  genTrayIcon(RUNTIME.shopTheme);
+})();
 requestAnimationFrame(loop);

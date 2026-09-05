@@ -30,7 +30,6 @@ const foods = [];                  // [{id, screenX, screenY, placeTime, type}]
 let foodIdCounter = 0;
 const FOOD_TYPES = ['🍎', '🍖', '🍰', '🍬', '🍪', '🥕', '🐟', '🧀'];
 let foodWindow = null;             // 全屏透明食物显示窗口
-let mouseHookProc = null;          // PowerShell 全局鼠标监听子进程
 
 function placeFoodAt(screenX, screenY) {
   if (!foodModeEnabled) return;
@@ -55,9 +54,10 @@ function sendFoodsToRenderer() {
   }
 }
 
-// PowerShell 脚本：用 GetAsyncKeyState 监听全局 Ctrl+左键
-// 边沿触发：仅在左键从未按→按下瞬间输出坐标，避免重复触发
-const MOUSE_HOOK_SCRIPT = `
+// PowerShell 脚本：用 GetAsyncKeyState 统一监听全局快捷键
+// 边沿触发：仅在某键从未按→按下瞬间输出，避免重复
+// 输出格式：M,x,y = Ctrl+左键；H = H 键
+const GLOBAL_HOOK_SCRIPT = `
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -67,136 +67,100 @@ public class U {
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
 }
 "@
-$last = $false
+$lastLeft = $false
+$lastH = $false
 while ($true) {
   $ctrl = ([U]::GetAsyncKeyState(0x11) -band 0x8000) -ne 0
   $left = ([U]::GetAsyncKeyState(0x01) -band 0x8000) -ne 0
-  if ($ctrl -and $left -and -not $last) {
+  $h = ([U]::GetAsyncKeyState(0x48) -band 0x8000) -ne 0
+  if ($ctrl -and $left -and -not $lastLeft) {
     $pt = New-Object U+POINT
     [U]::GetCursorPos([ref]$pt) | Out-Null
-    Write-Output "$($pt.X),$($pt.Y)"
+    Write-Output "M,$($pt.X),$($pt.Y)"
     [Console]::Out.Flush()
   }
-  $last = $left
+  if ($h -and -not $lastH) {
+    Write-Output "H"
+    [Console]::Out.Flush()
+  }
+  $lastLeft = $left
+  $lastH = $h
   Start-Sleep -Milliseconds 20
 }
 `;
 
-function startMouseHook() {
-  if (mouseHookProc) return;
-  // 用 Base64 编码避免 shell 双引号转义问题（PowerShell -EncodedCommand 需要 UTF-16LE）
-  const encoded = Buffer.from(MOUSE_HOOK_SCRIPT, 'utf16le').toString('base64');
-  // spawn 不继承完整 PATH，用绝对路径定位 powershell.exe，避免 ENOENT
+let globalHookProc = null;   // 统一的快捷键监听进程（合并鼠标+键盘）
+let petHidden = false;       // 桌宠是否处于隐藏状态
+let hookStopping = false;    // 主动停止标志（避免主动停止后自动重启）
+let hookRestartTimer = null; // 钩子异常退出后的自动重启定时器
+
+function startGlobalHook() {
+  if (globalHookProc) return;
+  hookStopping = false;  // 重置标志，让 exit 处理器能自动重启
+  const encoded = Buffer.from(GLOBAL_HOOK_SCRIPT, 'utf16le').toString('base64');
   const psExe = path.join(
     process.env.windir || process.env.SystemRoot || 'C:\\Windows',
     'System32\\WindowsPowerShell\\v1.0\\powershell.exe'
   );
   try {
-    mouseHookProc = spawn(psExe, ['-NoProfile', '-EncodedCommand', encoded], {
+    globalHookProc = spawn(psExe, ['-NoProfile', '-EncodedCommand', encoded], {
       stdio: ['ignore', 'pipe', 'ignore'],
     });
   } catch (e) {
-    console.error('[FOOD] PowerShell hook spawn failed:', e.message);
-    mouseHookProc = null;
+    console.error('[HOOK] PowerShell spawn failed:', e.message);
+    globalHookProc = null;
     return;
   }
-  // spawn 异步失败（如 ENOENT）会触发 error 事件，需清理引用
-  mouseHookProc.on('error', (e) => {
-    console.error('[FOOD] PowerShell hook error:', e.message);
-    mouseHookProc = null;
+  globalHookProc.on('error', (e) => {
+    console.error('[HOOK] PowerShell error:', e.message);
+    globalHookProc = null;
+  });
+  // 钩子进程异常退出时自动重启，保证 H 键/Ctrl+左键始终可用
+  globalHookProc.on('exit', (code) => {
+    globalHookProc = null;
+    if (hookStopping) {
+      console.log('[HOOK] Global hook stopped');
+      return;
+    }
+    console.warn(`[HOOK] Global hook exited unexpectedly (code=${code}), restarting in 2s...`);
+    if (hookRestartTimer) clearTimeout(hookRestartTimer);
+    hookRestartTimer = setTimeout(() => {
+      hookRestartTimer = null;
+      if (!app.isQuitting) startGlobalHook();
+    }, 2000);
   });
   let buf = '';
-  mouseHookProc.stdout.on('data', (chunk) => {
+  globalHookProc.stdout.on('data', (chunk) => {
     buf += chunk.toString();
     let nl;
     while ((nl = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, nl).trim();
       buf = buf.slice(nl + 1);
       if (!line) continue;
-      const parts = line.split(',');
-      const sx = parseInt(parts[0], 10);
-      const sy = parseInt(parts[1], 10);
-      if (!isNaN(sx) && !isNaN(sy)) {
-        placeFoodAt(sx, sy);
-      }
-    }
-  });
-  console.log('[FOOD] Mouse hook started (Ctrl+LeftClick)');
-}
-
-function stopMouseHook() {
-  if (mouseHookProc) {
-    try { mouseHookProc.kill(); } catch (e) {}
-    mouseHookProc = null;
-    console.log('[FOOD] Mouse hook stopped');
-  }
-}
-
-// ── H 键快速隐藏/显示 ──
-let keyHookProc = null;          // PowerShell 全局键盘监听子进程
-let petHidden = false;           // 桌宠是否处于隐藏状态
-
-// 监听 H 键（虚拟键码 0x48），边沿触发
-const KEY_HOOK_SCRIPT = `
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class K {
-  [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int v);
-}
-"@
-$last = $false
-while ($true) {
-  $h = ([K]::GetAsyncKeyState(0x48) -band 0x8000) -ne 0
-  if ($h -and -not $last) {
-    Write-Output "H"
-    [Console]::Out.Flush()
-  }
-  $last = $h
-  Start-Sleep -Milliseconds 30
-}
-`;
-
-function startKeyHook() {
-  if (keyHookProc) return;
-  const encoded = Buffer.from(KEY_HOOK_SCRIPT, 'utf16le').toString('base64');
-  const psExe = process.env.SystemRoot
-    ? path.join(process.env.SystemRoot, 'System32\\WindowsPowerShell\\v1.0\\powershell.exe')
-    : 'powershell.exe';
-  try {
-    keyHookProc = spawn(psExe, ['-NoProfile', '-EncodedCommand', encoded], {
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-  } catch (e) {
-    console.error('[HKEY] PowerShell hook spawn failed:', e.message);
-    keyHookProc = null;
-    return;
-  }
-  keyHookProc.on('error', (e) => {
-    console.error('[HKEY] PowerShell hook error:', e.message);
-    keyHookProc = null;
-  });
-  let buf = '';
-  keyHookProc.stdout.on('data', (chunk) => {
-    buf += chunk.toString();
-    let nl;
-    while ((nl = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
       if (line === 'H') {
         togglePetVisibility();
+      } else if (line.startsWith('M,')) {
+        // Ctrl+左键放置食物（仅食物模式开启时处理）
+        if (foodModeEnabled) {
+          const parts = line.slice(2).split(',');
+          const sx = parseInt(parts[0], 10);
+          const sy = parseInt(parts[1], 10);
+          if (!isNaN(sx) && !isNaN(sy)) placeFoodAt(sx, sy);
+        }
       }
     }
   });
-  console.log('[HKEY] Keyboard hook started (H to toggle)');
+  console.log('[HOOK] Global hook started (H + Ctrl+LeftClick)');
 }
 
-function stopKeyHook() {
-  if (keyHookProc) {
-    try { keyHookProc.kill(); } catch (e) {}
-    keyHookProc = null;
-    console.log('[HKEY] Keyboard hook stopped');
+function stopGlobalHook() {
+  hookStopping = true;
+  if (hookRestartTimer) { clearTimeout(hookRestartTimer); hookRestartTimer = null; }
+  if (globalHookProc) {
+    try { globalHookProc.kill(); } catch (e) {}
+    globalHookProc = null;
   }
+  console.log('[HOOK] Global hook stop requested');
 }
 
 // 切换桌宠可见性：触发动画（隐藏/显示都由渲染进程动画驱动）
@@ -271,11 +235,10 @@ function toggleFoodMode(enable) {
   foodModeEnabled = enable;
   if (enable) {
     createFoodWindow();
-    startMouseHook();
     console.log('[FOOD] Mode enabled, shortcut: Ctrl+LeftClick');
   } else {
-    stopMouseHook();
     foods.length = 0;
+    eatenFoodIds.clear();  // 清空已消费记录（id 单调递增，不会误伤新食物）
     sendFoodsToRenderer();
     if (foodWindow && !foodWindow.isDestroyed()) {
       foodWindow.hide();
@@ -297,6 +260,7 @@ const DEFAULT_SETTINGS = {
   eyeTrack: true,
   blink: true,
   particles: true,
+  shopTheme: 'sweet',   // 商店主题：sweet=甜暖风 / pixel=像素风
 };
 let settings = { ...DEFAULT_SETTINGS };
 
@@ -342,6 +306,29 @@ function saveSettings() {
   }
 }
 
+// 把子窗口摆到主窗口旁边（右侧优先，超出屏幕则左侧，再不行则屏幕居中）
+function positionNearMain(win) {
+  const [w, h] = win.getSize();
+  const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
+  let x, y;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    const [mx, my] = mainWindow.getPosition();
+    const [mw] = mainWindow.getSize();
+    if (mx + mw + 12 + w <= sw) {
+      x = mx + mw + 12;            // 主窗口右侧
+    } else if (mx - 12 - w >= 0) {
+      x = mx - 12 - w;             // 主窗口左侧
+    } else {
+      x = Math.floor((sw - w) / 2); // 屏幕水平居中
+    }
+    y = Math.max(0, Math.min(my, sh - h)); // 跟随主窗口高度并夹紧
+  } else {
+    x = Math.floor((sw - w) / 2);
+    y = Math.floor((sh - h) / 2);
+  }
+  win.setPosition(x, y);
+}
+
 function createSettingsWindow() {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
     settingsWindow.show();
@@ -365,6 +352,7 @@ function createSettingsWindow() {
       nodeIntegration: false,
     },
   });
+  positionNearMain(settingsWindow);
   settingsWindow.loadFile('renderer/settings.html');
   settingsWindow.on('closed', () => { settingsWindow = null; });
   settingsWindow.webContents.on('console-message', (_e, level, message) => {
@@ -395,15 +383,15 @@ ipcMain.on('settings-close', () => {
 });
 
 // ── 羁绊币 IPC ──
-// 更新托盘菜单中显示的余额
-function refreshCoinsMenuItem() {
-  if (!tray) return;
-  const menu = trayMenuCache && trayMenuCache.__menu;
-  // 直接重建菜单最简单可靠
-  cachedMenu = null;
-  if (tray.popUpContextMenu) {
-    // 仅更新菜单项 label（无需重新弹出）
+function broadcastCoins() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('coins-update', coins);
   }
+  if (shopWindow && !shopWindow.isDestroyed()) {
+    shopWindow.webContents.send('coins-update', coins);
+  }
+  cachedMenu = null;
+  menuCacheKey = '';
 }
 
 // 渲染进程上报获得金币
@@ -412,13 +400,7 @@ ipcMain.on('coins-add', (_e, amount) => {
   if (n <= 0) return;
   coins += n;
   saveCoins();
-  // 推送给渲染进程更新显示
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('coins-update', coins);
-  }
-  // 清空菜单缓存，下次打开托盘时显示新余额
-  cachedMenu = null;
-  menuCacheKey = '';
+  broadcastCoins();
   console.log(`[COINS] +${n} → ${coins}`);
 });
 
@@ -432,11 +414,7 @@ ipcMain.handle('coins-spend', (_e, amount) => {
   if (coins < n) return { ok: false, coins, reason: 'insufficient' };
   coins -= n;
   saveCoins();
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('coins-update', coins);
-  }
-  cachedMenu = null;
-  menuCacheKey = '';
+  broadcastCoins();
   console.log(`[COINS] -${n} → ${coins}`);
   return { ok: true, coins };
 });
@@ -449,8 +427,6 @@ const SHOP_CATALOG = GAME_CONFIG.shop || { food: [], emotion: [], effect: [] };
 
 // 已解锁商品（emotion/effect 永久；food 不存于此）
 const shopUnlockPath = path.join(app.getPath('userData'), 'shop_unlocks.json');
-// 已启用的特效 id 列表（用户可开关）
-const shopEffectEnabledPath = path.join(app.getPath('userData'), 'shop_effects_on.json');
 let unlockedItems = new Set();   // ['love','rainbow',...]
 let enabledEffects = new Set();  // ['hearts','stardust',...]
 
@@ -505,6 +481,7 @@ function createShopWindow() {
       nodeIntegration: false,
     },
   });
+  positionNearMain(shopWindow);
   shopWindow.loadFile('renderer/shop.html');
   shopWindow.on('closed', () => { shopWindow = null; });
   shopWindow.webContents.on('console-message', (_e, level, message) => {
@@ -541,23 +518,23 @@ ipcMain.handle('shop-buy', (_e, itemId) => {
     if (coins < found.price) return { ok: false, coins, reason: 'insufficient' };
     coins -= found.price;
     saveCoins();
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('coins-update', coins);
-    }
-    cachedMenu = null; menuCacheKey = '';
+    broadcastCoins();
 
     const emojiMap = { apple:'🍎', candy:'🍬', meat:'🍖', fish:'🐟', cake:'🍰' };
     const emoji = emojiMap[found.id] || '🍎';
     let placed = false;
     if (mainWindow && !mainWindow.isDestroyed()) {
       const [wx, wy] = mainWindow.getPosition();
-      const sx = wx + 210 + 80;
-      const sy = wy + 100;
+      // 按已有食物数量错位放置，避免连买多个堆在同一点
+      const foodIdx = foods.length;
+      const sx = wx + 210 + 80 + (foodIdx % 4) * 48;
+      const sy = wy + 100 - Math.floor(foodIdx / 4) * 42;
       foods.push({
         id: ++foodIdCounter,
         screenX: sx, screenY: sy,
         placeTime: Date.now(),
         type: emoji,
+        effect: found.effect || null,
       });
       // 若食物窗口未创建则创建一次
       createFoodWindow();
@@ -578,10 +555,7 @@ ipcMain.handle('shop-buy', (_e, itemId) => {
 
   coins -= found.price;
   saveCoins();
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('coins-update', coins);
-  }
-  cachedMenu = null; menuCacheKey = '';
+  broadcastCoins();
 
   unlockedItems.add(itemId);
   if (category === 'effect') enabledEffects.add(itemId);
@@ -631,6 +605,25 @@ ipcMain.on('shop-close', () => {
     shopWindow.close();
   }
 });
+
+// ── 商店主题（甜暖风 / 像素风）──
+function setShopTheme(theme) {
+  if (theme === 'sweet' || theme === 'pixel') {
+    settings.shopTheme = theme;
+    saveSettings();
+    cachedMenu = null;  // 触发托盘菜单重建，刷新单选选中态
+    // 推送给桌宠渲染进程实时更新主题视觉（托盘图标等）
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('settings-changed', { key: 'shopTheme', value: theme });
+    }
+    // 推送给打开中的商店窗口，主题实时切换（无需重开）
+    if (shopWindow && !shopWindow.isDestroyed()) {
+      shopWindow.webContents.send('shop-theme-changed', theme);
+    }
+  }
+}
+ipcMain.handle('shop-get-theme', () => settings.shopTheme || 'sweet');
+ipcMain.on('shop-set-theme', (_e, theme) => setShopTheme(theme));
 
 // ── 角色定义（从 game_config.json 加载，用于托盘菜单）──
 const CHARACTER_OPTIONS = Object.entries(GAME_CONFIG.characters || {}).map(([key, c]) => ({
@@ -709,11 +702,12 @@ function createWindow() {
     mainWindow.focus();
   });
 
-  // 页面加载完成后发送已保存的角色
+  // 页面加载完成后发送已保存的角色与主题
   mainWindow.webContents.once('did-finish-load', () => {
     if (currentCharacter !== 'slime') {
       mainWindow.webContents.send('character-change', currentCharacter);
     }
+    mainWindow.webContents.send('settings-changed', { key: 'shopTheme', value: settings.shopTheme || 'sweet' });
   });
   // 监听渲染进程 console 输出，转发到主进程终端
   mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
@@ -729,9 +723,9 @@ function createWindow() {
 let cachedMenu = null;
 let menuCacheKey = '';
 function getCachedMenu() {
-  // 计算缓存 key：包含 lanEnabled/autoWalk/clickThrough/currentCharacter/peer 数量/食物模式
+  // 计算缓存 key：包含 lanEnabled/autoWalk/clickThrough/currentCharacter/peer 数量/食物模式/商店主题
   const peerCount = lan.getPeers().length;
-  const key = `${lanEnabled}|${autoWalk}|${clickThrough}|${currentCharacter}|${peerCount}|${foodModeEnabled}`;
+  const key = `${lanEnabled}|${autoWalk}|${clickThrough}|${currentCharacter}|${peerCount}|${foodModeEnabled}|${settings.shopTheme}`;
   if (menuCacheKey !== key || !cachedMenu) {
     menuCacheKey = key;
     cachedMenu = buildMenu();
@@ -741,20 +735,32 @@ function getCachedMenu() {
 
 // ── 构建托盘菜单（含动态 peer 列表）──
 function buildMenu() {
-  const emotionLabels = {
+  // 默认免费表情；商店解锁表情单独追加
+  const freeEmotions = {
     happy: '高兴', angry: '愤怒', sad: '悲伤',
-    disdain: '鄙夷', badsmile: '坏笑', shocked: '震惊',
-    scared: '害怕', relaxed: '放松', proud: '得意'
+    disdain: '鄙夷', shocked: '震惊',
+    scared: '害怕', relaxed: '放松',
+  };
+  const shopEmotions = {
+    proud: '得意', dizzy: '晕眩', badsmile: '坏笑', love: '心动',
   };
   const statusLabels = {
     idle: '待机', working: '工作中', waiting: '等待确认',
     success: '任务成功', error: '任务失败', thinking: '思考中'
   };
 
-  const emotionItems = Object.entries(emotionLabels).map(([key, label]) => ({
-    label,
-    click: () => mainWindow.webContents.send('emotion-change', key)
-  }));
+  const emotionItems = [
+    ...Object.entries(freeEmotions).map(([key, label]) => ({
+      label,
+      click: () => tryEmotion(key),
+    })),
+    ...Object.entries(shopEmotions)
+      .filter(([key]) => unlockedItems.has(key))
+      .map(([key, label]) => ({
+        label: `${label} ★`,
+        click: () => tryEmotion(key),
+      })),
+  ];
 
   const statusItems = Object.entries(statusLabels).map(([key, label]) => ({
     label,
@@ -777,20 +783,30 @@ function buildMenu() {
     }
   }
 
+  // 居中回到屏幕底部的通用动作
+  const recallToBottom = () => {
+    const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
+    mainWindow.setPosition(Math.floor((sw - 420) / 2), sh - 500);
+  };
+
   const menuTemplate = [
-    { label: '共生体桌宠', enabled: false },
+    { label: '🐾 数字共生体桌宠', enabled: false },
+    { label: `🪙 羁绊币  ${coins}`, enabled: false },
     { type: 'separator' },
-    { label: '切换表情', submenu: emotionItems },
-    { label: '任务状态', submenu: statusItems },
-    { type: 'separator' },
-    { label: '喂食', click: () => mainWindow.webContents.send('pet-feed') },
-    { label: '跳舞', click: () => mainWindow.webContents.send('pet-dance') },
-    { label: '睡眠切换', click: () => mainWindow.webContents.send('pet-sleep-toggle') },
-    { label: '重置缩放', click: () => mainWindow.webContents.send('pet-reset-zoom') },
-    { type: 'separator' },
-    // ── 角色切换 ──
+    // ── 互动（收成一个子菜单）──
     {
-      label: '切换角色',
+      label: '🎮 互动',
+      submenu: [
+        { label: '🎭 切换表情', submenu: emotionItems },
+        { label: '📋 任务状态', submenu: statusItems },
+        { label: '🍖 喂食', click: () => mainWindow.webContents.send('pet-feed') },
+        { label: '💃 跳舞', click: () => mainWindow.webContents.send('pet-dance') },
+        { label: '😴 睡眠切换', click: () => mainWindow.webContents.send('pet-sleep-toggle') },
+        { label: '🔍 重置缩放', click: () => mainWindow.webContents.send('pet-reset-zoom') },
+      ],
+    },
+    {
+      label: '🧬 切换角色',
       submenu: CHARACTER_OPTIONS.map(c => ({
         label: `${c.icon} ${c.name}`,
         type: 'radio',
@@ -801,10 +817,12 @@ function buildMenu() {
         }
       }))
     },
+    { type: 'separator' },
+    // ── 设置 ──
     {
-      label: '点击穿透 (智能)',
+      label: '🖱 点击穿透 (智能)',
       type: 'checkbox',
-      checked: true,
+      checked: clickThrough,
       click: (item) => {
         // 智能穿透：勾选时由渲染进程根据宠物范围动态切换；取消时全程可点击
         clickThrough = item.checked;
@@ -816,7 +834,7 @@ function buildMenu() {
       }
     },
     {
-      label: '自动行走',
+      label: '🚶 自动行走',
       type: 'checkbox',
       checked: autoWalk,
       click: (item) => {
@@ -825,27 +843,34 @@ function buildMenu() {
       }
     },
     {
-      label: '放置食物模式 (Ctrl+左键)',
+      label: '🥕 放置食物模式',
       type: 'checkbox',
       checked: foodModeEnabled,
       click: (item) => toggleFoodMode(item.checked)
     },
     {
-      label: `🪙 羁绊币：${coins}`,
-      enabled: false,  // 仅展示，不可点击
+      label: '🎨 主题',
+      submenu: [
+        {
+          label: '🍬 甜暖风',
+          type: 'radio',
+          checked: settings.shopTheme === 'sweet',
+          click: () => setShopTheme('sweet'),
+        },
+        {
+          label: '🕹 像素风',
+          type: 'radio',
+          checked: settings.shopTheme === 'pixel',
+          click: () => setShopTheme('pixel'),
+        },
+      ],
     },
-    {
-      label: '🛒 商店...',
-      click: () => createShopWindow()
-    },
-    {
-      label: '⚙ 设置...',
-      click: () => createSettingsWindow()
-    },
+    { label: '🛒 羁绊商店…', click: () => createShopWindow() },
+    { label: '⚙️ 设置…', click: () => createSettingsWindow() },
     { type: 'separator' },
-    // ── 联机模式开关 ──
+    // ── 联机 ──
     {
-      label: '联机模式',
+      label: '📡 联机模式',
       type: 'checkbox',
       checked: lanEnabled,
       click: (item) => toggleLan(item.checked)
@@ -855,29 +880,19 @@ function buildMenu() {
   // 仅在联机开启时显示扔给/召回
   if (lanEnabled) {
     menuTemplate.push(
-      { label: '扔给…', submenu: lanMenuItems },
+      { label: '📤 扔给…', submenu: lanMenuItems },
       {
-        label: '召回桌宠',
-        click: () => {
-          const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
-          mainWindow.setPosition(Math.floor((sw - 420) / 2), sh - 500);
-          mainWindow.webContents.send('pet-recall');
-        }
+        label: '📥 召回桌宠',
+        click: () => { recallToBottom(); mainWindow.webContents.send('pet-recall'); }
       }
     );
   }
 
   menuTemplate.push(
     { type: 'separator' },
-    {
-      label: '回到屏幕底部',
-      click: () => {
-        const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
-        mainWindow.setPosition(Math.floor((sw - 420) / 2), sh - 500);
-      }
-    },
+    { label: '⬇️ 回到屏幕底部', click: recallToBottom },
     { type: 'separator' },
-    { label: '退出', click: () => app.quit() }
+    { label: '🚪 退出', click: () => app.quit() }
   );
 
   return Menu.buildFromTemplate(menuTemplate);
@@ -999,6 +1014,7 @@ ipcMain.on('physics-drop', (_e, vx, vy) => {
   const bounce = 0.45;
   const friction = 0.88;
   let edgeEscaped = false;
+  let lastPx = null, lastPy = null;
 
   if (physicsTimer) clearInterval(physicsTimer);
 
@@ -1078,13 +1094,20 @@ ipcMain.on('physics-drop', (_e, vx, vy) => {
       physicsTimer = null;
       return;
     }
-    try {
-      mainWindow.setPosition(Math.round(nx), Math.round(ny));
-    } catch (e) {
-      console.warn('[PHYSICS] setPosition failed, aborting:', e.message);
-      clearInterval(physicsTimer);
-      physicsTimer = null;
-      return;
+    const rx = Math.round(nx);
+    const ry = Math.round(ny);
+    // 位置未变则跳过 setPosition，减少主进程开销
+    if (rx !== lastPx || ry !== lastPy) {
+      try {
+        mainWindow.setPosition(rx, ry);
+        lastPx = rx;
+        lastPy = ry;
+      } catch (e) {
+        console.warn('[PHYSICS] setPosition failed, aborting:', e.message);
+        clearInterval(physicsTimer);
+        physicsTimer = null;
+        return;
+      }
     }
 
     // 静止判定
@@ -1146,10 +1169,14 @@ ipcMain.on('save-sprite-debug', (_e, name, dataUrl) => {
 });
 
 // ── IPC: 渲染进程通知桌宠吃掉了某食物 ──
+// 已消费集合：防止渲染进程动画延迟导致同一食物被重复消费
+const eatenFoodIds = new Set();
 ipcMain.on('eat-food', (_e, foodId) => {
+  if (eatenFoodIds.has(foodId)) return;   // 已被消费过，忽略
   const idx = foods.findIndex(f => f.id === foodId);
   if (idx >= 0) {
-    const eaten = foods.splice(idx, 1)[0];
+    foods.splice(idx, 1);
+    eatenFoodIds.add(foodId);
     sendFoodsToRenderer();
     console.log(`[FOOD] Eaten id=${foodId}, remaining=${foods.length}`);
   }
@@ -1182,7 +1209,7 @@ app.whenReady().then(() => {
   loadShopUnlocks();  // 加载商店解锁状态
   createWindow();
   createTray();
-  startKeyHook();  // 启动 H 键全局监听
+  startGlobalHook();  // 启动统一快捷键监听（H + Ctrl+LeftClick）
   writeHeartbeat();
   heartbeatTimer = setInterval(writeHeartbeat, 5000);
 
@@ -1206,8 +1233,7 @@ app.on('window-all-closed', () => {
   if (cursorTimer) clearInterval(cursorTimer);
   if (physicsTimer) clearInterval(physicsTimer);
   if (heartbeatTimer) clearInterval(heartbeatTimer);
-  stopMouseHook();
-  stopKeyHook();
+  stopGlobalHook();
   lan.stop();
   if (tray) tray.destroy();
   app.quit();

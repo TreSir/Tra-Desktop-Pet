@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('petAPI', {
   eatFood: (foodId) => ipcRenderer.send('eat-food', foodId),
 
   // ── 设置 ──
+  getSettings: () => ipcRenderer.invoke('settings-get-all'),
   // 接收设置变化 {key, value}
   onSettingsChanged: (cb) => ipcRenderer.on('settings-changed', (_e, val) => cb(val)),
 

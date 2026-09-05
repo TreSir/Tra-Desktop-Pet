@@ -25,21 +25,19 @@ window.addEventListener('resize', resize);
 let foods = [];
 console.log('[FOOD-WIN] food_window.html loaded');
 console.log('[FOOD-WIN] foodAPI available:', typeof window.foodAPI);
-window.foodAPI.onFoodsUpdate((list) => {
-  foods = list || [];
-  console.log(`[FOOD-WIN] Received ${foods.length} foods`);
-});
 
-let drawCount = 0;
-let lastLogTime = 0;
-function draw() {
+let rafId = 0;
+let needsClear = false;
+
+function drawFrame() {
+  rafId = 0;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  const now = Date.now();
-  drawCount++;
-  if (now - lastLogTime > 5000) {
-    console.log(`[FOOD-WIN] draw frame=${drawCount}, foods=${foods.length}`);
-    lastLogTime = now;
+  if (foods.length === 0) {
+    needsClear = false;
+    return; // 无食物时停帧，省 CPU
   }
+
+  const now = Date.now();
   for (let i = 0; i < foods.length; i++) {
     const f = foods[i];
     const bob = Math.sin(now * 0.005 + i * 0.7) * 4;
@@ -78,9 +76,25 @@ function draw() {
       ctx.restore();
     }
   }
-  requestAnimationFrame(draw);
+  rafId = requestAnimationFrame(drawFrame);
 }
-draw();
+
+function ensureAnimating() {
+  if (rafId) return;
+  if (foods.length === 0 && !needsClear) return;
+  rafId = requestAnimationFrame(drawFrame);
+}
+
+window.foodAPI.onFoodsUpdate((list) => {
+  const prev = foods.length;
+  foods = list || [];
+  if (foods.length === 0 && prev > 0) needsClear = true;
+  console.log(`[FOOD-WIN] Received ${foods.length} foods`);
+  ensureAnimating();
+});
+
+// 首次清空画布；有食物时由 ensureAnimating 驱动
+ensureAnimating();
 </script>
 </body>
 </html>

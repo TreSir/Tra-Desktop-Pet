@@ -82,27 +82,23 @@ function chromaKey(sourceImg, cropRatio, charDef) {
   const canvas = document.createElement('canvas');
   canvas.width = w;
   canvas.height = h;
-  const c2d = canvas.getContext('2d');
+  const c2d = canvas.getContext('2d', { willReadFrequently: true });
   c2d.drawImage(sourceImg, srcX, srcY, srcW, srcH, 0, 0, w, h);
 
-  // ── 去除右下角水印：把右下角 15% 区域当作背景色清除 ──
-  const wmData = c2d.getImageData(0, 0, w, h);
-  const wd = wmData.data;
+  // 单次读写像素缓冲（原先 3×getImageData + 3×putImageData）
+  const imgData = c2d.getImageData(0, 0, w, h);
+  const d = imgData.data;
+
+  // ── 去除右下角水印：把右下角区域 alpha 清零 ──
   const wmW = Math.floor(w * 0.15);
   const wmH = Math.floor(h * 0.08);
   const wmX0 = w - wmW;
   const wmY0 = h - wmH;
   for (let y = wmY0; y < h; y++) {
     for (let x = wmX0; x < w; x++) {
-      const idx = (y * w + x) * 4;
-      // 水印区域直接清零
-      wd[idx + 3] = 0;
+      d[(y * w + x) * 4 + 3] = 0;
     }
   }
-  c2d.putImageData(wmData, 0, 0);
-
-  const imgData = c2d.getImageData(0, 0, w, h);
-  const d = imgData.data;
 
   // ── 第1步：采样背景颜色（取四角像素的中值）──
   const corners = [];
@@ -176,40 +172,39 @@ function chromaKey(sourceImg, cropRatio, charDef) {
     }
   }
 
-  c2d.putImageData(imgData, 0, 0);
-
-  // ── 第3步：彻底清除残留低 alpha 像素 + 边缘收缩 ──
-  const edgeData = c2d.getImageData(0, 0, w, h);
-  const ed = edgeData.data;
+  // ── 第3步：清除残留低 alpha + 边缘孤立像素（读快照、写原缓冲）──
+  const alphaSnap = new Uint8Array(w * h);
+  for (let i = 0, p = 3; i < alphaSnap.length; i++, p += 4) {
+    alphaSnap[i] = d[p];
+  }
   for (let y = 1; y < h - 1; y++) {
     for (let x = 1; x < w - 1; x++) {
-      const idx = (y * w + x) * 4;
-      const alpha = ed[idx + 3];
+      const pi = y * w + x;
+      const alpha = alphaSnap[pi];
 
       // 低于阈值的像素直接清零，防止 shadowBlur 放大成矩形白框
       if (alpha < 12) {
-        ed[idx + 3] = 0;
+        d[pi * 4 + 3] = 0;
         continue;
       }
 
-      // 半透明边缘像素：检查周围邻居
+      // 半透明边缘像素：检查周围邻居（基于抠图后快照，避免读写冲突）
       if (alpha < 200) {
         let solidNeighbors = 0;
         for (let dy = -1; dy <= 1; dy++) {
           for (let dx = -1; dx <= 1; dx++) {
             if (dx === 0 && dy === 0) continue;
-            const nidx = ((y+dy) * w + (x+dx)) * 4;
-            if (ed[nidx + 3] > 100) solidNeighbors++;
+            if (alphaSnap[(y + dy) * w + (x + dx)] > 100) solidNeighbors++;
           }
         }
         if (solidNeighbors < 2) {
-          ed[idx + 3] = 0;
+          d[pi * 4 + 3] = 0;
         }
       }
     }
   }
-  c2d.putImageData(edgeData, 0, 0);
 
+  c2d.putImageData(imgData, 0, 0);
   return canvas;
 }
 
@@ -222,11 +217,12 @@ function loadSprites() {
       const keyed = chromaKey(img, cropRatio, def);
       spriteCache[key] = keyed;
       console.log(`[Sprite] Loaded: ${key} (${keyed.width}x${keyed.height})`);
-      // 调试：保存抠图结果到文件
-      try {
-        const dataUrl = keyed.toDataURL('image/png');
-        window.petAPI.saveSpriteDebug(key, dataUrl);
-      } catch(e) { console.warn('[Sprite] Debug save failed:', e); }
+      // 调试：仅在 localStorage.debugSprites=1 时写出抠图 PNG，避免每次启动磁盘写入
+      if (localStorage.getItem('debugSprites') === '1' && window.petAPI?.saveSpriteDebug) {
+        try {
+          window.petAPI.saveSpriteDebug(key, keyed.toDataURL('image/png'));
+        } catch (e) { console.warn('[Sprite] Debug save failed:', e); }
+      }
     };
     img.onerror = () => {
       console.warn(`[Sprite] Failed to load: ${def.spriteSrc}`);
@@ -281,13 +277,16 @@ function drawSpriteBody(ctx, t, params, sprite, charDef) {
   const [gr, gg, gb] = charDef.glowColor;
 
   // ── 外辉光：径向渐变（不依赖矩形图，避免方框）──
-  const glowR = drawW * 0.7;
-  const glow = ctx.createRadialGradient(cx, cy, drawW * 0.15, cx, cy, glowR);
-  glow.addColorStop(0, `rgba(${gr},${gg},${gb},${0.18 * params.glow})`);
-  glow.addColorStop(0.5, `rgba(${gr},${gg},${gb},${0.06 * params.glow})`);
-  glow.addColorStop(1, `rgba(${gr},${gg},${gb},0)`);
-  ctx.fillStyle = glow;
-  ctx.fillRect(cx - glowR, cy - glowR, glowR * 2, glowR * 2);
+  // glow 接近 0（如睡眠/低能量时）直接跳过，省去每帧 createRadialGradient 分配
+  if (params.glow > 0.01) {
+    const glowR = drawW * 0.7;
+    const glow = ctx.createRadialGradient(cx, cy, drawW * 0.15, cx, cy, glowR);
+    glow.addColorStop(0, `rgba(${gr},${gg},${gb},${0.18 * params.glow})`);
+    glow.addColorStop(0.5, `rgba(${gr},${gg},${gb},${0.06 * params.glow})`);
+    glow.addColorStop(1, `rgba(${gr},${gg},${gb},0)`);
+    ctx.fillStyle = glow;
+    ctx.fillRect(cx - glowR, cy - glowR, glowR * 2, glowR * 2);
+  }
 
   // ── 主体精灵图 ──
   ctx.drawImage(sprite, drawX, drawY, drawW, finalH);
