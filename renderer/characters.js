@@ -1,7 +1,7 @@
 'use strict';
 
 // ═══════════════════════════════════════════════
-// 多角色系统 — AI生成高质量精灵图 + 动画适配
+// 多角色系统 — 透明 PNG 精灵图 + 旧版绿幕资源兼容
 // ═══════════════════════════════════════════════
 
 // ── 角色定义（从 game_config.json 加载，失败时回退到内置默认）──
@@ -59,6 +59,28 @@ const CHARACTERS = (window.GAME_CONFIG && window.GAME_CONFIG.characters) || {
 };
 
 const CHARACTER_LIST = Object.keys(CHARACTERS);
+
+// 皮肤是角色的外观变体，不进入角色列表。默认皮肤沿用角色本身的资源定义。
+function getCharacterAppearance(charKey, skinKey = 'default') {
+  const character = CHARACTERS[charKey] || CHARACTERS.slime;
+  if (skinKey === 'default') return { ...character, skinId: 'default', skinName: '默认' };
+  const skin = (character.skins || []).find(item => item.id === skinKey);
+  return skin
+    ? { ...character, ...skin, skinId: skin.id, skinName: skin.name || skin.id }
+    : { ...character, skinId: 'default', skinName: '默认' };
+}
+
+function getCharacterSkins(charKey) {
+  const character = CHARACTERS[charKey] || CHARACTERS.slime;
+  return [
+    { id: 'default', name: '默认', icon: character.icon },
+    ...(character.skins || []).map(({ id, name, icon }) => ({ id, name, icon: icon || character.icon })),
+  ];
+}
+
+function spriteCacheKey(charKey, skinKey = 'default') {
+  return `${charKey}::${skinKey}`;
+}
 
 // ═══════════════════════════════════════════════
 // 精灵图加载 + 绿幕抠图
@@ -209,30 +231,31 @@ function chromaKey(sourceImg, cropRatio, charDef) {
 }
 
 function loadSprites() {
-  for (const [key, def] of Object.entries(CHARACTERS)) {
-    const img = new Image();
-    img.onload = () => {
-      // 坤坤图片有右下角水印，裁掉更多边缘
-      const cropRatio = def.cropRatio || 0.08;
-      const keyed = chromaKey(img, cropRatio, def);
-      spriteCache[key] = keyed;
-      console.log(`[Sprite] Loaded: ${key} (${keyed.width}x${keyed.height})`);
-      // 调试：仅在 localStorage.debugSprites=1 时写出抠图 PNG，避免每次启动磁盘写入
-      if (localStorage.getItem('debugSprites') === '1' && window.petAPI?.saveSpriteDebug) {
-        try {
-          window.petAPI.saveSpriteDebug(key, keyed.toDataURL('image/png'));
-        } catch (e) { console.warn('[Sprite] Debug save failed:', e); }
-      }
-    };
-    img.onerror = () => {
-      console.warn(`[Sprite] Failed to load: ${def.spriteSrc}`);
-    };
-    img.src = def.spriteSrc;
+  for (const [charKey, character] of Object.entries(CHARACTERS)) {
+    for (const skin of getCharacterSkins(charKey)) {
+      const appearance = getCharacterAppearance(charKey, skin.id);
+      const img = new Image();
+      img.onload = () => {
+        // 新资源为原生透明 PNG，直接绘制可保留柔和边缘；旧 JPG 走绿幕兼容流程。
+        const sprite = appearance.transparent
+          ? img
+          : chromaKey(img, appearance.cropRatio || 0.08, appearance);
+        spriteCache[spriteCacheKey(charKey, skin.id)] = sprite;
+        console.log(`[Sprite] Loaded: ${charKey}/${skin.id} (${sprite.width}x${sprite.height}, ${appearance.transparent ? 'alpha' : 'keyed'})`);
+        if (!appearance.transparent && localStorage.getItem('debugSprites') === '1' && window.petAPI?.saveSpriteDebug) {
+          try {
+            window.petAPI.saveSpriteDebug(`${charKey}-${skin.id}`, sprite.toDataURL('image/png'));
+          } catch (e) { console.warn('[Sprite] Debug save failed:', e); }
+        }
+      };
+      img.onerror = () => console.warn(`[Sprite] Failed to load: ${appearance.spriteSrc}`);
+      img.src = appearance.spriteSrc;
+    }
   }
 }
 
-function getSprite(charKey) {
-  return spriteCache[charKey] || null;
+function getSprite(charKey, skinKey = 'default') {
+  return spriteCache[spriteCacheKey(charKey, skinKey)] || null;
 }
 
 // ═══════════════════════════════════════════════
@@ -256,8 +279,9 @@ function drawSpriteBody(ctx, t, params, sprite, charDef) {
     baseW = CFG.r * 2.6;
     baseH = CFG.r * 2.6;
   }
-  const drawW = baseW * pet.squashX * breath;
-  const drawH = baseH * pet.squashY * breath;
+  const artScale = charDef.spriteScale || 1;
+  const drawW = baseW * artScale * pet.squashX * breath;
+  const drawH = baseH * artScale * pet.squashY * breath;
 
   // 眼球追踪：整体微移
   const lookX = pet.sleeping ? 0 : clamp((pet._rawMouseX || 0) * 0.01, -2.5, 2.5);
@@ -287,6 +311,18 @@ function drawSpriteBody(ctx, t, params, sprite, charDef) {
     ctx.fillStyle = glow;
     ctx.fillRect(cx - glowR, cy - glowR, glowR * 2, glowR * 2);
   }
+
+  // 透明资源没有矩形底色，用一枚随呼吸起伏的柔和落地光把角色自然地“放”在桌面上。
+  const padY = cy + drawH * 0.36;
+  const padW = drawW * 0.34;
+  const pad = ctx.createRadialGradient(cx, padY, 1, cx, padY, padW);
+  pad.addColorStop(0, `rgba(${gr},${gg},${gb},${0.16 * params.glow})`);
+  pad.addColorStop(0.55, `rgba(${gr},${gg},${gb},${0.055 * params.glow})`);
+  pad.addColorStop(1, `rgba(${gr},${gg},${gb},0)`);
+  ctx.fillStyle = pad;
+  ctx.beginPath();
+  ctx.ellipse(cx, padY, padW, Math.max(5, drawH * 0.055), 0, 0, TAU);
+  ctx.fill();
 
   // ── 主体精灵图 ──
   ctx.drawImage(sprite, drawX, drawY, drawW, finalH);
@@ -330,15 +366,19 @@ const charMorph = {
   progress: 0,
   fromChar: 'slime',
   toChar: 'slime',
+  fromSkin: 'default',
+  toSkin: 'default',
 };
 
-function startCharMorph(newChar) {
-  if (newChar === pet.character || charMorph.active) return;
+function startCharMorph(newChar, newSkin = 'default') {
+  if ((newChar === pet.character && newSkin === pet.skin) || charMorph.active) return;
   charMorph.active = true;
   charMorph.phase = 0;
   charMorph.progress = 0;
   charMorph.fromChar = pet.character;
   charMorph.toChar = newChar;
+  charMorph.fromSkin = pet.skin;
+  charMorph.toSkin = newSkin;
 }
 
 function updateCharMorph(dt) {
@@ -348,6 +388,7 @@ function updateCharMorph(dt) {
   if (charMorph.phase === 0 && charMorph.progress >= 1) {
     // 切换到新角色
     pet.character = charMorph.toChar;
+    pet.skin = charMorph.toSkin;
     charMorph.phase = 1;
     charMorph.progress = 0;
     // 切换时爆出星尘

@@ -64,7 +64,7 @@ contextBridge.exposeInMainWorld('petAPI', {
 
   // ── 角色切换 ──
   onCharacterChange: (cb) => ipcRenderer.on('character-change', (_e, val) => cb(val)),
-  characterSync: (charKey) => ipcRenderer.send('character-sync', charKey),
+  characterSync: (charKey, skinKey = 'default') => ipcRenderer.send('character-sync', { character: charKey, skin: skinKey }),
 
   // ── 局域网联机 ──
   // 联机模式开关变化

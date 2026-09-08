@@ -79,6 +79,7 @@ const pet = {
 
   // ── 角色系统 ──
   character: 'slime',  // 当前角色：slime/cat/ghost/flame/robot
+  skin: 'default',     // 当前皮肤：角色的外观变体，不改变角色类型
 
   // 物理
   bobY: 0, walkOffset: 0,
@@ -432,7 +433,7 @@ const RUNTIME = {
   eyeTrack: true,
   blink: true,
   particles: true,
-  shopTheme: 'sweet',   // 全局主题：sweet=甜暖风 / pixel=像素风
+  shopTheme: 'aurora', // 全局主题：aurora=极光玻璃 / sweet=甜暖风 / pixel=像素风
 };
 let foodMoveAccumX = 0, foodMoveAccumY = 0; // 累积移动量，减少 IPC 频率
 
@@ -733,20 +734,54 @@ function drawAura(ctx, t, rx, ry) {
     const c = hslToRgb((t * 30) % 360, 80, 60);
     r = c[0]; g = c[1]; b = c[2];
   } else {
-    [r, g, b] = moodColor(pet.mood);
+    // 常态时以角色自身的主色为主，再混入情绪色；不同角色切换后光环也有专属辨识度。
+    const [mr, mg, mb] = moodColor(pet.mood);
+    const appearance = getCharacterAppearance(pet.character, pet.skin);
+    const [cr, cg, cb] = appearance.glowColor || [0, 200, 255];
+    r = Math.round(cr * 0.72 + mr * 0.28);
+    g = Math.round(cg * 0.72 + mg * 0.28);
+    b = Math.round(cb * 0.72 + mb * 0.28);
   }
-  const pulse = 0.5 + Math.sin(t * 1.5 + pet.auraPhase) * 0.3;
-  const auraR = Math.max(rx, ry) * (1.35 + pulse * 0.15);
+  const energy = clamp(pet.energy / 100, 0.22, 1);
+  const activeBoost = pet.hovering ? 0.22 : 0;
+  const pulse = 0.56 + Math.sin(t * (pet.sleeping ? 0.65 : 1.65) + pet.auraPhase) * (pet.sleeping ? 0.12 : 0.24) + activeBoost;
+  const auraR = Math.max(rx, ry) * (1.33 + pulse * 0.2);
 
-  // 外层光环
-  const ag = ctx.createRadialGradient(CFG.cx, CFG.cy, rx * 0.9, CFG.cx, CFG.cy, auraR);
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  // 柔和外晕 + 内核晕染，形成由内向外的两层呼吸感。
+  const ag = ctx.createRadialGradient(CFG.cx, CFG.cy, rx * 0.35, CFG.cx, CFG.cy, auraR * 1.18);
   ag.addColorStop(0, `rgba(${r},${g},${b},0)`);
-  ag.addColorStop(0.7, `rgba(${r},${g},${b},${0.04 * pulse})`);
+  ag.addColorStop(0.44, `rgba(${r},${g},${b},${0.025 * energy})`);
+  ag.addColorStop(0.72, `rgba(${r},${g},${b},${0.1 * pulse * energy})`);
   ag.addColorStop(1, `rgba(${r},${g},${b},0)`);
   ctx.fillStyle = ag;
   ctx.beginPath();
-  ctx.arc(CFG.cx, CFG.cy, auraR, 0, TAU);
+  ctx.arc(CFG.cx, CFG.cy, auraR * 1.18, 0, TAU);
   ctx.fill();
+
+  const core = ctx.createRadialGradient(CFG.cx, CFG.cy + ry * 0.25, 2, CFG.cx, CFG.cy + ry * 0.25, auraR * 0.92);
+  core.addColorStop(0, `rgba(${r},${g},${b},${0.09 * pulse * energy})`);
+  core.addColorStop(0.55, `rgba(${r},${g},${b},${0.018 * energy})`);
+  core.addColorStop(1, `rgba(${r},${g},${b},0)`);
+  ctx.fillStyle = core;
+  ctx.beginPath(); ctx.ellipse(CFG.cx, CFG.cy + ry * 0.2, auraR * 0.94, auraR * 0.68, 0, 0, TAU); ctx.fill();
+
+  // 分段轨道使外圈更像在“运转”，不使用持续整圈描边以避免抢主体。
+  const rings = [
+    { radius: auraR * 0.91, width: 1.15, alpha: 0.25, speed: 0.38, span: 0.52, count: 5 },
+    { radius: auraR * 1.06, width: 0.7, alpha: 0.16, speed: -0.26, span: 0.32, count: 7 },
+  ];
+  ctx.lineCap = 'round';
+  for (const ring of rings) {
+    ctx.lineWidth = ring.width;
+    ctx.strokeStyle = `rgba(${r},${g},${b},${ring.alpha * pulse * energy})`;
+    for (let i = 0; i < ring.count; i++) {
+      const start = t * ring.speed + (i / ring.count) * TAU;
+      ctx.beginPath(); ctx.arc(CFG.cx, CFG.cy, ring.radius, start, start + ring.span); ctx.stroke();
+    }
+  }
+  ctx.restore();
 
   // 进化光环（彩虹色旋转）
   if (pet.evoGlow > 0.01) {
@@ -1095,7 +1130,7 @@ function drawBubble(ctx) {
   const a = clamp(pet.bubbleTimer, 0, 1);
   const popIn = clamp((2.5 - pet.bubbleTimer) / 0.2, 0, 1); // 弹入动画
   const scale = easeOutCubic(popIn);
-  const bx = CFG.cx, by = CFG.cy - 76;
+  const bx = CFG.cx, by = Math.max(36, CFG.cy - 84 * pet.zoom - 22);
   ctx.save();
   ctx.globalAlpha = a;
   ctx.translate(bx, by);
@@ -1104,14 +1139,15 @@ function drawBubble(ctx) {
   ctx.font = '12px "Microsoft YaHei",sans-serif';
   ctx.textAlign = 'center';
   const tw = ctx.measureText(pet.bubbleText).width;
-  const bw = tw + 22, bh = 24;
+  const bw = Math.min(CFG.W - 32, tw + 30), bh = 32;
 
   ctx.fillStyle = `rgba(0,170,255,${0.06 * a})`;
   roundRect(ctx, bx - bw / 2 - 2, by - bh / 2 - 2, bw + 4, bh + 4, 10);
   ctx.fill();
 
-  ctx.fillStyle = 'rgba(12,12,26,0.94)';
-  ctx.strokeStyle = 'rgba(0,200,255,0.5)';
+  const ui = CompanionVisual.palette(RUNTIME.shopTheme);
+  ctx.fillStyle = ui.surface;
+  ctx.strokeStyle = ui.border;
   ctx.lineWidth = 1;
   roundRect(ctx, bx - bw / 2, by - bh / 2, bw, bh, 8);
   ctx.fill(); ctx.stroke();
@@ -1119,10 +1155,10 @@ function drawBubble(ctx) {
   ctx.beginPath();
   ctx.moveTo(bx - 5, by + bh / 2); ctx.lineTo(bx, by + bh / 2 + 6);
   ctx.lineTo(bx + 5, by + bh / 2); ctx.closePath();
-  ctx.fillStyle = 'rgba(12,12,26,0.94)'; ctx.fill();
+  ctx.fillStyle = ui.surface; ctx.fill();
 
-  ctx.fillStyle = 'rgba(175,228,255,1)';
-  ctx.fillText(pet.bubbleText, bx, by + 4);
+  ctx.fillStyle = ui.text;
+  ctx.fillText(pet.bubbleText, bx, by + 4, bw - 22);
   ctx.restore();
 }
 
@@ -1450,19 +1486,12 @@ function updateSpringPhysics(dt, t) {
     // 心形粒子：每 0.6s 生成一个
     if (fx.includes('hearts') && pet._shopTick % 0.6 < dt) spawnHeart();
     // 星尘：高频小粒子
-    if (fx.includes('stardust') && Math.random() < dt * 8) {
-      // 复用粒子池，但用金色
-      spawnParticle();
-      // 改最后一个粒子的颜色为金色
-      const last = particlePool[particlePool.length - 1];
-      // 实际上 spawnParticle 用 _idx 标记，取栈顶刚弹出的那个
-      // 简化：直接遍历最末尾活跃的，hue 改成 50（金色）
-      for (let i = particlePool.length - 1; i >= 0; i--) {
-        if (particlePool[i].active) {
-          particlePool[i].hue = 50;
-          particlePool[i].decay *= 0.8;
-          break;
-        }
+    if (fx.includes('stardust') && Math.random() < dt * 5) {
+      // 金色星尘使用轨道粒子，复用对象池而不是扫描整池寻找“最新元素”。
+      const stardust = spawnParticle('orbit');
+      if (stardust) {
+        stardust.hue = 48;
+        stardust.decay *= 0.72;
       }
     }
     // 闪电拖尾：移动时生成（基于上次位置差）
@@ -1479,6 +1508,12 @@ function updateSpringPhysics(dt, t) {
         });
       }
     }
+  }
+
+  // 非商店特效也保留少量角色主色的轨道微粒；悬停时增密，睡眠时停用以节省渲染。
+  if (RUNTIME.particles && !pet.sleeping) {
+    const orbitRate = pet.hovering ? 2.6 : 0.42;
+    if (Math.random() < dt * orbitRate) spawnParticle('orbit');
   }
 
   const springK = 0.12;
@@ -1802,8 +1837,8 @@ function loop(ts) {
   }
   ctx.globalAlpha = morphAlpha;
 
-  const charDef = CHARACTERS[pet.character] || CHARACTERS.slime;
-  const sprite = getSprite(pet.character);
+  const charDef = getCharacterAppearance(pet.character, pet.skin);
+  const sprite = getSprite(pet.character, pet.skin);
 
   if (sprite) {
     // 精灵图渲染（AI生成高质量形象）
@@ -1855,6 +1890,7 @@ function loop(ts) {
 
   // 羁绊币（飘字 + 顶部计数）
   drawCoins(ctx);
+  drawCompanionHUD(ctx, dt);
 
   ctx.restore(); // 屏震 restore
 
@@ -1917,6 +1953,7 @@ window.__getPetStateForTransfer = function() {
     evolutionLevel: pet.evolutionLevel,
     zoom: pet.zoomTarget,
     character: pet.character,
+    skin: pet.skin,
   };
 };
 
@@ -2076,6 +2113,34 @@ function updateCoins(dt) {
 }
 
 // 绘制金币飘字
+let companionHudAlpha = 0;
+function drawCompanionHUD(ctx, dt) {
+  const visible = pet.hovering && !pet.dragging && !pet.falling && !pet.hidden && !pet.hideAnim && !pet.flyAway;
+  companionHudAlpha = lerp(companionHudAlpha, visible ? 1 : 0, Math.min(1,dt * 9));
+  if (companionHudAlpha < .01) return;
+  const x = CFG.cx - 101;
+  const y = Math.min(CFG.H - 77, CFG.cy + 80 * pet.zoom + 14);
+  ctx.save();
+  ctx.globalAlpha = companionHudAlpha;
+  const ui = CompanionVisual.panel(ctx,x,y,202,59,RUNTIME.shopTheme);
+  ctx.font = '600 11px "Microsoft YaHei",sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = ui.text;
+  ctx.fillText(CHARACTERS[pet.character]?.name || '桌宠',x+12,y+19);
+  ctx.textAlign = 'right';
+  ctx.fillStyle = ui.accent;
+  ctx.fillText('◈ ' + pet.coins,x+190,y+19);
+  const bars = [{label:'心情',value:pet.mood,color:ui.accent,x:x+12},{label:'活力',value:pet.energy,color:ui.energy,x:x+108}];
+  for (const bar of bars) {
+    ctx.font = '9px "Microsoft YaHei",sans-serif'; ctx.textAlign = 'left';
+    ctx.fillStyle = ui.muted; ctx.fillText(bar.label,bar.x,y+34);
+    ctx.textAlign = 'right'; ctx.fillText(Math.round(bar.value),bar.x+80,y+34);
+    ctx.fillStyle = ui.border; ctx.beginPath(); ctx.roundRect(bar.x,y+42,80,3,2); ctx.fill();
+    ctx.fillStyle = bar.color; ctx.beginPath(); ctx.roundRect(bar.x,y+42,Math.max(0,Math.min(80,bar.value*.8)),3,1); ctx.fill();
+  }
+  ctx.restore();
+}
+
 function drawCoins(ctx) {
   for (const p of pet.coinPopups) {
     const a = clamp(p.life, 0, 1);
@@ -2262,9 +2327,9 @@ canvas.addEventListener('wheel', (e) => {
       : (idx - 1 + keys.length) % keys.length;
     const newChar = keys[next];
     if (newChar === pet.character) return;
-    startCharMorph(newChar);
-    window.petAPI.characterSync(newChar);
-    const meta = CHARACTERS[newChar];
+    startCharMorph(newChar, 'default');
+    window.petAPI.characterSync(newChar, 'default');
+    const meta = getCharacterAppearance(newChar, 'default');
     setEmotion('shocked', `${meta.icon} ${meta.name}！`);
     spawnShockwave(CFG.cx, CFG.cy, 1.2);
     for (let i = 0; i < 15; i++) spawnSparkle();
@@ -2364,9 +2429,13 @@ window.petAPI.onResetZoom(() => {
   setEmotion('shocked', '！');
 });
 
-window.petAPI.onCharacterChange((charKey) => {
-  if (CHARACTERS[charKey]) {
-    startCharMorph(charKey);
+window.petAPI.onCharacterChange((selection) => {
+  const next = typeof selection === 'string'
+    ? { character: selection, skin: 'default' }
+    : selection;
+  if (next && CHARACTERS[next.character]) {
+    const appearance = getCharacterAppearance(next.character, next.skin || 'default');
+    startCharMorph(next.character, appearance.skinId);
   }
 });
 
@@ -2688,7 +2757,8 @@ window.petAPI.onPetReceived((state) => {
   if (state.zoom != null) pet.zoomTarget = state.zoom;
   if (state.character && CHARACTERS[state.character]) {
     pet.character = state.character;
-    window.petAPI.characterSync(state.character);
+    pet.skin = getCharacterAppearance(state.character, state.skin || 'default').skinId;
+    window.petAPI.characterSync(state.character, pet.skin);
   }
 
   pet.dropIn = { t: 0 };
@@ -2771,6 +2841,22 @@ function genTrayIcon(theme) {
     px(18, 12, 2, '#e6f8ff');
     x.fillStyle = 'rgba(0,0,0,0.25)';               // 底部阴影
     x.fillRect(8, 22, 16, 2);
+  } else if (theme === 'aurora') {
+    // 极光玻璃：与透明桌宠统一的深靛蓝 + 青绿发光语言。
+    const halo = x.createRadialGradient(16, 17, 2, 16, 17, 15);
+    halo.addColorStop(0, 'rgba(69, 246, 255, 0.9)');
+    halo.addColorStop(0.5, 'rgba(33, 120, 255, 0.42)');
+    halo.addColorStop(1, 'rgba(33, 120, 255, 0)');
+    x.fillStyle = halo; x.fillRect(0, 0, 32, 32);
+    x.fillStyle = '#111a4a';
+    x.beginPath(); x.ellipse(16, 18, 10.5, 8.8, 0, 0, TAU); x.fill();
+    x.strokeStyle = '#51f4ff'; x.lineWidth = 1.4; x.stroke();
+    x.fillStyle = '#b8fbff';
+    x.beginPath(); x.ellipse(12, 16, 2.5, 3.1, 0, 0, TAU); x.ellipse(20, 16, 2.5, 3.1, 0, 0, TAU); x.fill();
+    x.fillStyle = '#16317c';
+    x.beginPath(); x.arc(12.3, 16.3, 1.2, 0, TAU); x.arc(20.3, 16.3, 1.2, 0, TAU); x.fill();
+    x.fillStyle = '#6ff8ff';
+    x.beginPath(); x.arc(11.8, 15.7, 0.45, 0, TAU); x.arc(19.8, 15.7, 0.45, 0, TAU); x.fill();
   } else {
     // ── 甜暖风：圆润粉色小圆宠 + 粉色光晕 ──
     x.shadowColor = 'rgba(255,122,166,0.9)';

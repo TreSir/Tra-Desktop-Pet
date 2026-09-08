@@ -260,7 +260,7 @@ const DEFAULT_SETTINGS = {
   eyeTrack: true,
   blink: true,
   particles: true,
-  shopTheme: 'sweet',   // 商店主题：sweet=甜暖风 / pixel=像素风
+  shopTheme: 'aurora', // 商店主题：aurora=极光玻璃 / sweet=甜暖风 / pixel=像素风
 };
 let settings = { ...DEFAULT_SETTINGS };
 
@@ -301,8 +301,10 @@ function loadSettings() {
 function saveSettings() {
   try {
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+    return true;
   } catch (e) {
     console.warn('[SETTINGS] Save failed:', e.message);
+    return false;
   }
 }
 
@@ -336,8 +338,8 @@ function createSettingsWindow() {
     return;
   }
   settingsWindow = new BrowserWindow({
-    width: 380,
-    height: 560,
+    width: Math.min(600, screen.getPrimaryDisplay().workAreaSize.width),
+    height: Math.min(780, screen.getPrimaryDisplay().workAreaSize.height),
     frame: false,
     transparent: true,
     resizable: false,
@@ -363,17 +365,32 @@ function createSettingsWindow() {
 // ── 设置 IPC ──
 ipcMain.handle('settings-get-all', () => settings);
 
-ipcMain.on('settings-set', (_e, { key, value }) => {
-  if (key in DEFAULT_SETTINGS) {
+ipcMain.handle('settings-set', (_e, payload = {}) => {
+  const { key, value } = payload;
+  if (key === 'shopTheme') return { ok: setShopTheme(value) };
+  const limits = { walkSpeed:[10,80], foodSeekSpeed:[80,800], foodEatDist:[20,100], energyDecay:[0.1,2], energyRecover:[0.5,10] };
+  const valid = Object.hasOwn(limits,key)
+    ? Number.isFinite(value) && value >= limits[key][0] && value <= limits[key][1]
+    : ['eyeTrack','blink','particles'].includes(key) && typeof value === 'boolean';
+  if (valid) {
     const oldVal = settings[key];
     settings[key] = value;
-    saveSettings();
+    if (!saveSettings()) { settings[key] = oldVal; return { ok:false }; }
     // 推送给桌宠渲染进程实时应用
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('settings-changed', { key, value });
     }
     console.log(`[SETTINGS] ${key}: ${oldVal} -> ${value}`);
+    return { ok:true };
   }
+  return { ok:false };
+});
+
+ipcMain.on('ui-open-settings', () => createSettingsWindow());
+ipcMain.on('ui-open-shop', () => createShopWindow());
+ipcMain.handle('shop-use-emotion', (_e, id) => {
+  if (!SHOP_CATALOG.emotion.some(item => item.id === id)) return { ok:false };
+  return { ok: tryEmotion(id) };
 });
 
 ipcMain.on('settings-close', () => {
@@ -465,8 +482,8 @@ function createShopWindow() {
     return;
   }
   shopWindow = new BrowserWindow({
-    width: 460,
-    height: 620,
+    width: Math.min(740, screen.getPrimaryDisplay().workAreaSize.width),
+    height: Math.min(790, screen.getPrimaryDisplay().workAreaSize.height),
     frame: false,
     transparent: true,
     resizable: false,
@@ -606,11 +623,12 @@ ipcMain.on('shop-close', () => {
   }
 });
 
-// ── 商店主题（甜暖风 / 像素风）──
+// ── 商店主题（极光玻璃 / 甜暖风 / 像素风）──
 function setShopTheme(theme) {
-  if (theme === 'sweet' || theme === 'pixel') {
+  if (theme === 'aurora' || theme === 'sweet' || theme === 'pixel') {
+    const previous = settings.shopTheme;
     settings.shopTheme = theme;
-    saveSettings();
+    if (!saveSettings()) { settings.shopTheme = previous; return false; }
     cachedMenu = null;  // 触发托盘菜单重建，刷新单选选中态
     // 推送给桌宠渲染进程实时更新主题视觉（托盘图标等）
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -620,9 +638,17 @@ function setShopTheme(theme) {
     if (shopWindow && !shopWindow.isDestroyed()) {
       shopWindow.webContents.send('shop-theme-changed', theme);
     }
+    if (settingsWindow && !settingsWindow.isDestroyed()) {
+      settingsWindow.webContents.send('shop-theme-changed', theme);
+    }
+    if (foodWindow && !foodWindow.isDestroyed()) {
+      foodWindow.webContents.send('shop-theme-changed', theme);
+    }
+    return true;
   }
+  return false;
 }
-ipcMain.handle('shop-get-theme', () => settings.shopTheme || 'sweet');
+ipcMain.handle('shop-get-theme', () => settings.shopTheme || 'aurora');
 ipcMain.on('shop-set-theme', (_e, theme) => setShopTheme(theme));
 
 // ── 角色定义（从 game_config.json 加载，用于托盘菜单）──
@@ -632,8 +658,26 @@ const CHARACTER_OPTIONS = Object.entries(GAME_CONFIG.characters || {}).map(([key
   icon: c.icon,
 }));
 
+function getSkinOptions(charKey) {
+  const character = GAME_CONFIG.characters && GAME_CONFIG.characters[charKey];
+  if (!character) return [{ id: 'default', name: '默认', icon: '🎨' }];
+  return [
+    { id: 'default', name: '默认', icon: character.icon },
+    ...(character.skins || []).map(skin => ({
+      id: skin.id,
+      name: skin.name || skin.id,
+      icon: skin.icon || character.icon,
+    })),
+  ];
+}
+
+function normalizeSkin(charKey, skinKey) {
+  return getSkinOptions(charKey).some(skin => skin.id === skinKey) ? skinKey : 'default';
+}
+
 // ── 角色持久化 ──
 let currentCharacter = 'slime';
+let currentSkin = 'default';
 const charConfigPath = path.join(app.getPath('userData'), 'character.json');
 
 function loadCharacter() {
@@ -642,15 +686,17 @@ function loadCharacter() {
       const data = JSON.parse(fs.readFileSync(charConfigPath, 'utf-8'));
       if (data.character && CHARACTER_OPTIONS.find(c => c.key === data.character)) {
         currentCharacter = data.character;
+        currentSkin = normalizeSkin(currentCharacter, data.skin || 'default');
       }
     }
   } catch (e) { /* ignore */ }
 }
 
-function saveCharacter(charKey) {
+function saveCharacter(charKey, skinKey = 'default') {
   currentCharacter = charKey;
+  currentSkin = normalizeSkin(charKey, skinKey);
   try {
-    fs.writeFileSync(charConfigPath, JSON.stringify({ character: charKey }), 'utf-8');
+    fs.writeFileSync(charConfigPath, JSON.stringify({ character: charKey, skin: currentSkin }), 'utf-8');
   } catch (e) { /* ignore */ }
 }
 
@@ -704,10 +750,10 @@ function createWindow() {
 
   // 页面加载完成后发送已保存的角色与主题
   mainWindow.webContents.once('did-finish-load', () => {
-    if (currentCharacter !== 'slime') {
-      mainWindow.webContents.send('character-change', currentCharacter);
+    if (currentCharacter !== 'slime' || currentSkin !== 'default') {
+      mainWindow.webContents.send('character-change', { character: currentCharacter, skin: currentSkin });
     }
-    mainWindow.webContents.send('settings-changed', { key: 'shopTheme', value: settings.shopTheme || 'sweet' });
+    mainWindow.webContents.send('settings-changed', { key: 'shopTheme', value: settings.shopTheme || 'aurora' });
   });
   // 监听渲染进程 console 输出，转发到主进程终端
   mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
@@ -725,7 +771,7 @@ let menuCacheKey = '';
 function getCachedMenu() {
   // 计算缓存 key：包含 lanEnabled/autoWalk/clickThrough/currentCharacter/peer 数量/食物模式/商店主题
   const peerCount = lan.getPeers().length;
-  const key = `${lanEnabled}|${autoWalk}|${clickThrough}|${currentCharacter}|${peerCount}|${foodModeEnabled}|${settings.shopTheme}`;
+  const key = `${lanEnabled}|${autoWalk}|${clickThrough}|${currentCharacter}|${currentSkin}|${peerCount}|${foodModeEnabled}|${settings.shopTheme}`;
   if (menuCacheKey !== key || !cachedMenu) {
     menuCacheKey = key;
     cachedMenu = buildMenu();
@@ -812,10 +858,22 @@ function buildMenu() {
         type: 'radio',
         checked: currentCharacter === c.key,
         click: () => {
-          saveCharacter(c.key);
-          mainWindow.webContents.send('character-change', c.key);
+          saveCharacter(c.key, 'default');
+          mainWindow.webContents.send('character-change', { character: c.key, skin: 'default' });
         }
       }))
+    },
+    {
+      label: '🎨 切换皮肤',
+      submenu: getSkinOptions(currentCharacter).map(skin => ({
+        label: `${skin.icon} ${skin.name}`,
+        type: 'radio',
+        checked: currentSkin === skin.id,
+        click: () => {
+          saveCharacter(currentCharacter, skin.id);
+          mainWindow.webContents.send('character-change', { character: currentCharacter, skin: currentSkin });
+        },
+      })),
     },
     { type: 'separator' },
     // ── 设置 ──
@@ -851,6 +909,12 @@ function buildMenu() {
     {
       label: '🎨 主题',
       submenu: [
+        {
+          label: '🌌 极光玻璃',
+          type: 'radio',
+          checked: settings.shopTheme === 'aurora',
+          click: () => setShopTheme('aurora'),
+        },
         {
           label: '🍬 甜暖风',
           type: 'radio',
@@ -1150,9 +1214,12 @@ ipcMain.handle('send-pet-to', async (_e, peerId) => {
 });
 
 // ── IPC: 渲染进程同步角色变更（如 LAN 接收后）──
-ipcMain.on('character-sync', (_e, charKey) => {
-  if (charKey && CHARACTER_OPTIONS.find(c => c.key === charKey)) {
-    saveCharacter(charKey);
+ipcMain.on('character-sync', (_e, selection) => {
+  const next = typeof selection === 'string'
+    ? { character: selection, skin: 'default' }
+    : selection;
+  if (next && next.character && CHARACTER_OPTIONS.find(c => c.key === next.character)) {
+    saveCharacter(next.character, next.skin || 'default');
   }
 });
 
@@ -1193,6 +1260,7 @@ function writeHeartbeat() {
       uptime: process.uptime(),
       memoryMB: Math.round(process.memoryUsage().rss / 1024 / 1024),
       character: currentCharacter,
+      skin: currentSkin,
       clickThrough, autoWalk, lanEnabled,
       peerCount: lan.getPeers().length,
       foodModeEnabled,

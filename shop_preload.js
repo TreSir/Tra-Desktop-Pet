@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('shopAPI', {
   buy: (itemId) => ipcRenderer.invoke('shop-buy', itemId),
   // 切换特效启用状态（返回 {ok, effectsOn, reason?}）
   toggleEffect: (itemId) => ipcRenderer.invoke('shop-toggle-effect', itemId),
+  useEmotion: (itemId) => ipcRenderer.invoke('shop-use-emotion', itemId),
+  openSettings: () => ipcRenderer.send('ui-open-settings'),
   // 关闭商店窗口
   close: () => ipcRenderer.send('shop-close'),
   // 监听余额变化（购买后实时更新）

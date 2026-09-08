@@ -2,5 +2,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('foodAPI', {
+  getTheme: () => ipcRenderer.invoke('shop-get-theme'),
+  onThemeChanged: (cb) => ipcRenderer.on('shop-theme-changed', (_e, val) => cb(val)),
   onFoodsUpdate: (cb) => ipcRenderer.on('foods-update', (_e, val) => cb(val)),
 });

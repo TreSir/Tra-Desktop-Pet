@@ -17,52 +17,107 @@
     "slime": {
       "name": "史莱姆",
       "icon": "🟦",
-      "glowColor": [0, 200, 255],
-      "particleHue": 178,
-      "spriteSrc": "assets/slime.jpg"
+      "glowColor": [70, 230, 130],
+      "particleHue": 142,
+      "spriteSrc": "assets/slime-jade.png",
+      "transparent": true,
+      "spriteScale": 1.08,
+      "skins": [
+        {
+          "id": "starlight",
+          "name": "星海蓝",
+          "icon": "🌌",
+          "glowColor": [70, 232, 255],
+          "particleHue": 190,
+          "spriteSrc": "assets/slime-premium.png",
+          "transparent": true,
+          "spriteScale": 1.08
+        }
+      ]
     },
     "cat": {
       "name": "小猫",
       "icon": "🐱",
-      "glowColor": [255, 180, 100],
+      "glowColor": [255, 190, 90],
       "particleHue": 35,
-      "spriteSrc": "assets/cat.jpg"
+      "spriteSrc": "assets/cat-honey.png",
+      "transparent": true,
+      "spriteScale": 1.06,
+      "skins": [
+        {
+          "id": "starlight",
+          "name": "星海蓝",
+          "icon": "🌙",
+          "glowColor": [104, 196, 255],
+          "particleHue": 215,
+          "spriteSrc": "assets/cat-premium.png",
+          "transparent": true,
+          "spriteScale": 1.06
+        }
+      ]
     },
     "ghost": {
       "name": "幽灵",
       "icon": "👻",
-      "glowColor": [180, 220, 255],
-      "particleHue": 200,
-      "spriteSrc": "assets/ghost.jpg"
+      "glowColor": [210, 150, 255],
+      "particleHue": 278,
+      "spriteSrc": "assets/ghost-violet.png",
+      "transparent": true,
+      "skins": [
+        {
+          "id": "aurora",
+          "name": "极光蓝",
+          "icon": "🫧",
+          "glowColor": [144, 226, 255],
+          "particleHue": 198,
+          "spriteSrc": "assets/ghost-premium.png",
+          "transparent": true
+        }
+      ]
     },
     "flame": {
       "name": "火焰",
       "icon": "🔥",
-      "glowColor": [255, 140, 40],
+      "glowColor": [255, 110, 50],
       "particleHue": 20,
-      "spriteSrc": "assets/flame.jpg"
+      "spriteSrc": "assets/flame-sunset.png",
+      "transparent": true,
+      "skins": [
+        {
+          "id": "blueflame",
+          "name": "蓝焰",
+          "icon": "💠",
+          "glowColor": [80, 198, 255],
+          "particleHue": 205,
+          "spriteSrc": "assets/flame-premium.png",
+          "transparent": true
+        }
+      ]
     },
     "robot": {
       "name": "机器人",
       "icon": "🤖",
-      "glowColor": [100, 255, 150],
-      "particleHue": 140,
-      "spriteSrc": "assets/robot.jpg"
+      "glowColor": [115, 245, 180],
+      "particleHue": 154,
+      "spriteSrc": "assets/robot-mint.png",
+      "transparent": true
     },
     "kunkun": {
       "name": "坤坤",
       "icon": "🐔",
-      "glowColor": [200, 200, 255],
-      "particleHue": 260,
-      "spriteSrc": "assets/kunkun.jpg",
-      "isHumanoid": true
+      "glowColor": [255, 95, 195],
+      "particleHue": 324,
+      "spriteSrc": "assets/kunkun-magenta.png",
+      "isHumanoid": true,
+      "transparent": true
     },
     "tree": {
       "name": "小树",
       "icon": "🌳",
-      "glowColor": [80, 200, 100],
-      "particleHue": 120,
-      "spriteSrc": "assets/tree.jpg",
+      "glowColor": [102, 196, 82],
+      "particleHue": 108,
+      "spriteSrc": "assets/tree-grove.png",
+      "transparent": true,
       "chromaKey": {
         "hardCutoff": 25,
         "hardKeep": 120,

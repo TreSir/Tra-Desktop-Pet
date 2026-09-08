@@ -19,33 +19,67 @@ for (let i = 0; i < PARTICLE_POOL_SIZE; i++) {
   particleFreeStack.push(i);  // 初始全部空闲
 }
 
-function spawnParticle() {
+function getEffectPalette() {
+  const appearance = typeof getCharacterAppearance === 'function'
+    ? getCharacterAppearance(pet.character, pet.skin)
+    : null;
+  return {
+    hue: appearance?.particleHue ?? 190,
+    rgb: appearance?.glowColor ?? [80, 210, 255],
+  };
+}
+
+function spawnParticle(kind = 'drift') {
   if (particleFreeStack.length === 0) return;  // 池满
   const idx = particleFreeStack.pop();
   const p = particlePool[idx];
+  const palette = getEffectPalette();
   const a = Math.random() * TAU;
   const r = CFG.r * (0.5 + Math.random() * 0.55);
   p.active = true;
+  p.kind = kind;
   p.x = CFG.cx + Math.cos(a) * r;
   p.y = CFG.cy + Math.sin(a) * r * 0.85;
   p.vx = (Math.random() - 0.5) * 0.6;
   p.vy = -0.3 - Math.random() * 0.8;
   p.size = 0.6 + Math.random() * 2.2;
   p.life = 1;
-  p.decay = 0.005 + Math.random() * 0.013;
-  p.hue = 178 + Math.random() * 34;
+  p.decay = kind === 'orbit' ? 0.0035 + Math.random() * 0.004 : 0.005 + Math.random() * 0.013;
+  p.hue = palette.hue + (Math.random() - 0.5) * 20;
+  p.phase = a;
+  p.orbitR = r;
+  p.orbitSpeed = (Math.random() < 0.5 ? -1 : 1) * (0.65 + Math.random() * 0.55);
+  p.tilt = 0.7 + Math.random() * 0.32;
   p._idx = idx;  // 记住索引便于回收
+  return p;
 }
 
 function updateParticles(dt, rate) {
-  if (!RUNTIME.particles) return;
-  if (Math.random() < rate * dt * 0.7) spawnParticle();
+  if (!RUNTIME.particles) {
+    // 关闭粒子时立即回收池，避免画面留下冻结光点，也避免无效遍历。
+    for (let i = 0; i < particlePool.length; i++) {
+      if (particlePool[i].active) {
+        particlePool[i].active = false;
+        particleFreeStack.push(i);
+      }
+    }
+    return;
+  }
+  if (Math.random() < rate * dt * 0.45) spawnParticle();
+  const step = dt * 60;
   for (let i = 0; i < particlePool.length; i++) {
     const p = particlePool[i];
     if (!p.active) continue;
-    p.x += p.vx; p.y += p.vy;
-    p.vy -= 0.007; p.vx *= 0.99;
-    p.life -= p.decay;
+    if (p.kind === 'orbit') {
+      p.phase += p.orbitSpeed * dt;
+      const breathing = 1 + Math.sin(p.phase * 2.4) * 0.06;
+      p.x = CFG.cx + Math.cos(p.phase) * p.orbitR * breathing;
+      p.y = CFG.cy + Math.sin(p.phase) * p.orbitR * p.tilt * breathing;
+    } else {
+      p.x += p.vx * step; p.y += p.vy * step;
+      p.vy -= 0.007 * step; p.vx *= Math.pow(0.99, step);
+    }
+    p.life -= p.decay * step;
     if (p.life <= 0) {
       p.active = false;
       particleFreeStack.push(i);  // 回收到栈
@@ -54,24 +88,36 @@ function updateParticles(dt, rate) {
 }
 
 function drawParticles(ctx) {
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
   for (let i = 0; i < particlePool.length; i++) {
     const p = particlePool[i];
     if (!p.active) continue;
     const a = p.life * 0.8;
     const h = p.hue | 0;
-    ctx.fillStyle = `hsla(${h},100%,55%,${a * 0.06})`;
-    ctx.beginPath(); ctx.arc(p.x, p.y, p.size * 5, 0, TAU); ctx.fill();
-    ctx.fillStyle = `hsla(${h},100%,65%,${a * 0.15})`;
-    ctx.beginPath(); ctx.arc(p.x, p.y, p.size * 2.8, 0, TAU); ctx.fill();
-    ctx.fillStyle = `hsla(${h},100%,82%,${a})`;
-    ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, TAU); ctx.fill();
+    const scale = p.kind === 'orbit' ? 1.35 : 1;
+    ctx.fillStyle = `hsla(${h},96%,58%,${a * 0.075})`;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.size * 5 * scale, 0, TAU); ctx.fill();
+    ctx.fillStyle = `hsla(${h},100%,70%,${a * 0.2})`;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.size * 2.5 * scale, 0, TAU); ctx.fill();
+    ctx.fillStyle = `hsla(${h},100%,90%,${a})`;
+    if (p.kind === 'orbit') {
+      ctx.save();
+      ctx.translate(p.x, p.y); ctx.rotate(p.phase);
+      ctx.fillRect(-p.size * 0.55, -p.size * 0.55, p.size * 1.1, p.size * 1.1);
+      ctx.restore();
+    } else {
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, TAU); ctx.fill();
+    }
   }
+  ctx.restore();
 }
 
 // ═══════════════════════════════════════════════
 // 心形粒子
 // ═══════════════════════════════════════════════
 function spawnHeart() {
+  if (pet.hearts.length >= 24) return;
   pet.hearts.push({
     x: CFG.cx + (Math.random() - 0.5) * 40,
     y: CFG.cy - 20,
@@ -244,12 +290,15 @@ function drawCracks(ctx) {
 // 星尘闪烁（开心/兴奋时）
 // ═══════════════════════════════════════════════
 function spawnSparkle(x, y) {
+  if (pet.sparkles.length >= 46) return;
+  const palette = getEffectPalette();
   pet.sparkles.push({
     x: x || CFG.cx + (Math.random() - 0.5) * 80,
     y: y || CFG.cy + (Math.random() - 0.5) * 60,
     life: 1,
     size: 3 + Math.random() * 5,
     rot: Math.random() * TAU,
+    hue: palette.hue,
   });
 }
 
@@ -270,8 +319,8 @@ function drawSparkles(ctx) {
     ctx.globalAlpha = s.life;
     const sz = s.size * s.life;
     // 四角星
-    ctx.fillStyle = `rgba(255,240,180,${s.life * 0.9})`;
-    ctx.shadowColor = 'rgba(255,220,100,0.8)';
+    ctx.fillStyle = `hsla(${s.hue ?? 48},100%,88%,${s.life * 0.9})`;
+    ctx.shadowColor = `hsla(${s.hue ?? 48},100%,70%,0.8)`;
     ctx.shadowBlur = 6;
     ctx.beginPath();
     ctx.moveTo(0, -sz);
@@ -370,8 +419,10 @@ function drawFootprints(ctx) {
 // 冲击波环（着陆/重击时）
 // ═══════════════════════════════════════════════
 function spawnShockwave(x, y, intensity) {
+  if (pet.shockwaves.length >= 10) return;
+  const palette = getEffectPalette();
   pet.shockwaves.push({
-    x, y, r: 5, maxR: 40 + intensity * 20, life: 1, intensity,
+    x, y, r: 5, maxR: 40 + intensity * 20, life: 1, intensity, hue: palette.hue,
   });
 }
 
@@ -386,12 +437,12 @@ function updateShockwaves(dt) {
 
 function drawShockwaves(ctx) {
   for (const s of pet.shockwaves) {
-    ctx.strokeStyle = `rgba(0,220,255,${s.life * 0.5})`;
+    ctx.strokeStyle = `hsla(${s.hue ?? 190},100%,65%,${s.life * 0.5})`;
     ctx.lineWidth = 2 * s.life;
     ctx.beginPath();
     ctx.arc(s.x, s.y, s.r, 0, TAU);
     ctx.stroke();
-    ctx.strokeStyle = `rgba(150,240,255,${s.life * 0.3})`;
+    ctx.strokeStyle = `hsla(${s.hue ?? 190},100%,90%,${s.life * 0.3})`;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.arc(s.x, s.y, s.r * 0.7, 0, TAU);
