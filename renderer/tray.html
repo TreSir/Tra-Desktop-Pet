@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+  <title>陪伴控制台 · Companion</title>
+  <link rel="stylesheet" href="ui.css"><link rel="stylesheet" href="tray.css">
+  <script defer src="ui-common.js"></script><script defer src="tray.js"></script>
+</head>
+<body data-theme="aurora">
+  <div class="shell tray-shell">
+    <header class="tray-title"><span class="brand-mark" aria-hidden="true">✳</span><span class="brand-name">COMPANION</span><span class="grow"></span><button id="closeBtn" class="icon-btn" aria-label="收起托盘面板" title="收起 · Esc">×</button></header>
+    <section class="pet-card" aria-label="当前陪伴伙伴">
+      <div class="pet-orbit" aria-hidden="true"></div>
+      <div class="pet-copy"><span class="eyebrow">YOUR LITTLE COMPANION</span><h1 id="petName">陪伴，触手可及。</h1><p id="skinName">正在唤醒控制台…</p><span class="pet-presence"><i></i>今天也在你身边</span></div>
+      <img id="petPortrait" alt="当前宠物" hidden>
+    </section>
+    <div class="tray-meta"><span id="connection">本机陪伴</span><span class="grow"></span><span class="tray-coins">◈ <b id="coinCount">—</b><small>羁绊币</small></span></div>
+    <nav class="tray-tabs" role="tablist" aria-label="控制台栏目">
+      <button id="tab-home" role="tab" aria-selected="true" aria-controls="home" data-tab="home">日常陪伴</button>
+      <button id="tab-wardrobe" role="tab" aria-selected="false" aria-controls="wardrobe" data-tab="wardrobe" tabindex="-1">角色衣橱</button>
+      <button id="tab-controls" role="tab" aria-selected="false" aria-controls="controls" data-tab="controls" tabindex="-1">桌面偏好</button>
+    </nav>
+    <main class="tray-scroll">
+      <div id="loadError" class="notice" hidden>暂时没连上控制台。<button id="retryBtn" class="button">重试</button></div>
+      <section id="home" role="tabpanel" aria-labelledby="tab-home" tabindex="0"></section>
+      <section id="wardrobe" role="tabpanel" aria-labelledby="tab-wardrobe" tabindex="0" hidden></section>
+      <section id="controls" role="tabpanel" aria-labelledby="tab-controls" tabindex="0" hidden></section>
+    </main>
+    <footer class="tray-footer"><button id="bottomBtn" class="footer-link">⌖ 回到屏幕底部</button><span class="grow"></span><button id="quitBtn" class="footer-link quit">退出桌宠</button></footer>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

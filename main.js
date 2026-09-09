@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const LanManager = require('./lan.js');
+const createTrayPanel = require('./tray-panel');
 
 // ── userData 重定向（必须在所有 app.getPath('userData') 之前执行）──
 // 把用户数据目录重定向到项目内 .userdata/，避免沙盒限制访问 AppData
@@ -706,6 +707,7 @@ process.on('uncaughtException', (err) => {
 
 let mainWindow;
 let tray;
+let trayPanel;
 let clickThrough = false;
 let autoWalk = true;
 let cursorTimer = null;
@@ -761,7 +763,7 @@ function createWindow() {
   });
 
   mainWindow.webContents.on('context-menu', () => {
-    if (tray) tray.popUpContextMenu(getCachedMenu());
+    if (trayPanel) trayPanel.toggle(screen.getCursorScreenPoint());
   });
 }
 
@@ -959,6 +961,13 @@ function buildMenu() {
     { label: '🚪 退出', click: () => app.quit() }
   );
 
+  const panelIds = {
+    '🎮 互动':'interact', '🧬 切换角色':'characters', '🎨 切换皮肤':'skins',
+    '🖱 点击穿透 (智能)':'clickThrough', '🚶 自动行走':'walk', '🥕 放置食物模式':'foodMode',
+    '🎨 主题':'theme', '🛒 羁绊商店…':'shop', '⚙️ 设置…':'settings', '📡 联机模式':'lan',
+    '📤 扔给…':'peers', '📥 召回桌宠':'recall', '⬇️ 回到屏幕底部':'bottom', '🚪 退出':'quit',
+  };
+  for (const item of menuTemplate) if (panelIds[item.label]) item.id = panelIds[item.label];
   return Menu.buildFromTemplate(menuTemplate);
 }
 
@@ -1016,8 +1025,17 @@ function createTray(iconDataUrl) {
     }
     tray = new Tray(icon);
     tray.setToolTip('数字共生体桌宠');
-    tray.setContextMenu(getCachedMenu());
-    tray.on('click', () => tray.popUpContextMenu(getCachedMenu()));
+    trayPanel = createTrayPanel({
+      buildMenu,
+      getState: () => ({ coins, theme:settings.shopTheme || 'aurora', currentCharacter, currentSkin,
+        characters:GAME_CONFIG.characters, lanEnabled, peerCount:lan.getPeers().length }),
+      fallback: () => tray.popUpContextMenu(buildMenu()),
+    });
+    tray.on('click', (event, bounds) => {
+      if (event.shiftKey) { tray.popUpContextMenu(buildMenu()); return; }
+      trayPanel.toggle(bounds);
+    });
+    tray.on('right-click', (_event, bounds) => trayPanel.toggle(bounds));
   } catch (e) {
     console.error('[TRAY ERROR]', e && e.stack ? e.stack : e);
   }
