@@ -43,21 +43,34 @@ class LanManager {
     return ips;
   }
 
-  // 获取子网广播地址列表（用于定向广播，比 255.255.255.255 更可靠）
+  // 获取子网广播地址列表（计算真实子网广播地址，结合全局 255.255.255.255）
   getBroadcastAddresses() {
     const interfaces = os.networkInterfaces();
-    const addrs = [];
+    const addrs = new Set();
     for (const name of Object.keys(interfaces)) {
       for (const iface of interfaces[name]) {
-        if (iface.family === 'IPv4' && !iface.internal) {
+        if (iface.family === 'IPv4' && !iface.internal && iface.address) {
+          if (iface.netmask) {
+            const ipParts = iface.address.split('.').map(Number);
+            const maskParts = iface.netmask.split('.').map(Number);
+            if (ipParts.length === 4 && maskParts.length === 4) {
+              const bcast = [];
+              for (let i = 0; i < 4; i++) {
+                bcast.push((ipParts[i] & maskParts[i]) | (~maskParts[i] & 255));
+              }
+              addrs.add(bcast.join('.'));
+              continue;
+            }
+          }
           const parts = iface.address.split('.');
           if (parts.length === 4) {
-            addrs.push(parts.slice(0, 3).join('.') + '.255');
+            addrs.add(parts.slice(0, 3).join('.') + '.255');
           }
         }
       }
     }
-    return addrs;
+    addrs.add('255.255.255.255');
+    return Array.from(addrs);
   }
 
   start() {
@@ -78,14 +91,33 @@ class LanManager {
         return;
       }
 
-      // 接收桌宠
+      // 接收桌宠（含 64KB 大小限制与格式校验）
       if (req.method === 'POST' && req.url === '/receive-pet') {
         let body = '';
-        req.on('data', chunk => { body += chunk; });
+        let tooLarge = false;
+        req.on('data', chunk => {
+          body += chunk;
+          if (body.length > 65536) {
+            tooLarge = true;
+            req.destroy();
+          }
+        });
         req.on('end', () => {
+          if (tooLarge) return;
           try {
-            const state = JSON.parse(body);
-            console.log(`[LAN] Received pet from ${state.senderName || 'unknown'}`);
+            const raw = JSON.parse(body);
+            if (!raw || typeof raw !== 'object') throw new Error('Invalid payload');
+            const state = {
+              character: typeof raw.character === 'string' ? raw.character.slice(0, 32) : 'slime',
+              skin: typeof raw.skin === 'string' ? raw.skin.slice(0, 32) : 'default',
+              emotion: typeof raw.emotion === 'string' ? raw.emotion.slice(0, 32) : 'happy',
+              mood: Number.isFinite(raw.mood) ? Math.max(0, Math.min(100, raw.mood)) : 80,
+              energy: Number.isFinite(raw.energy) ? Math.max(0, Math.min(100, raw.energy)) : 80,
+              senderName: typeof raw.senderName === 'string' ? raw.senderName.slice(0, 64) : 'unknown',
+              vx: Number.isFinite(raw.vx) ? raw.vx : 0,
+              vy: Number.isFinite(raw.vy) ? raw.vy : 0,
+            };
+            console.log(`[LAN] Received pet from ${state.senderName}`);
             if (this.onPetReceived) this.onPetReceived(state);
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ ok: true }));

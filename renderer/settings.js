@@ -10,6 +10,8 @@ const toggles = [
   {id:'eyeTrack',label:'跟随你的目光',hint:'宠物会留意鼠标的位置'},
   {id:'blink',label:'自然眨眼',hint:'给陪伴增加一点生动感'},
   {id:'particles',label:'粒子装饰',hint:'控制桌宠的环境微粒'},
+  {id:'soundEnabled',label:'互动萌系音效',hint:'抚摸、投喂与空中接住时的清脆声音'},
+  {id:'autoStart',label:'开机自动启动',hint:'让它在开机时就静静陪在你身边'},
 ];
 let saveQueue = Promise.resolve();
 let saveVersion = 0;

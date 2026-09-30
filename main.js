@@ -15,6 +15,42 @@ try {
   console.warn('[MAIN] Cannot redirect userData:', e.message);
 }
 
+// ── 原子写入文件辅助（写临时文件后 rename，防止异常断电导致 JSON 损坏）──
+function atomicWriteFileSync(filePath, content) {
+  const tmpPath = `${filePath}.${Date.now()}.${Math.random().toString(36).slice(2, 6)}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, content, 'utf-8');
+    fs.renameSync(tmpPath, filePath);
+  } catch (e) {
+    if (process.platform === 'win32') {
+      try {
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        fs.renameSync(tmpPath, filePath);
+      } catch (e2) {
+        fs.writeFileSync(filePath, content, 'utf-8');
+      }
+    } else {
+      fs.writeFileSync(filePath, content, 'utf-8');
+    }
+  }
+}
+
+// ── 获取全部接入屏幕的联合工作区（用于多显示器跨屏移动与边界判定）──
+function getCombinedWorkArea() {
+  const displays = screen.getAllDisplays();
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const d of displays) {
+    const wa = d.workArea;
+    if (wa.x < minX) minX = wa.x;
+    if (wa.y < minY) minY = wa.y;
+    if (wa.x + wa.width > maxX) maxX = wa.x + wa.width;
+    if (wa.y + wa.height > maxY) maxY = wa.y + wa.height;
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+let isAppQuitting = false;
+
 // ── 加载统一配置文件 ──
 let GAME_CONFIG = { characters: {}, shop: { food: [], emotion: [], effect: [] } };
 try {
@@ -96,6 +132,16 @@ let hookStopping = false;    // 主动停止标志（避免主动停止后自动
 let hookRestartTimer = null; // 钩子异常退出后的自动重启定时器
 
 function startGlobalHook() {
+  if (isAppQuitting) return;
+  if (process.platform !== 'win32') {
+    try {
+      const { globalShortcut } = require('electron');
+      globalShortcut.register('CommandOrControl+Shift+H', () => togglePetVisibility());
+    } catch (e) {
+      console.warn('[HOOK] Native globalShortcut failed:', e.message);
+    }
+    return;
+  }
   if (globalHookProc) return;
   hookStopping = false;  // 重置标志，让 exit 处理器能自动重启
   const encoded = Buffer.from(GLOBAL_HOOK_SCRIPT, 'utf16le').toString('base64');
@@ -119,7 +165,7 @@ function startGlobalHook() {
   // 钩子进程异常退出时自动重启，保证 H 键/Ctrl+左键始终可用
   globalHookProc.on('exit', (code) => {
     globalHookProc = null;
-    if (hookStopping) {
+    if (hookStopping || isAppQuitting) {
       console.log('[HOOK] Global hook stopped');
       return;
     }
@@ -127,7 +173,7 @@ function startGlobalHook() {
     if (hookRestartTimer) clearTimeout(hookRestartTimer);
     hookRestartTimer = setTimeout(() => {
       hookRestartTimer = null;
-      if (!app.isQuitting) startGlobalHook();
+      if (!isAppQuitting && !hookStopping) startGlobalHook();
     }, 2000);
   });
   let buf = '';
@@ -158,7 +204,13 @@ function stopGlobalHook() {
   hookStopping = true;
   if (hookRestartTimer) { clearTimeout(hookRestartTimer); hookRestartTimer = null; }
   if (globalHookProc) {
-    try { globalHookProc.kill(); } catch (e) {}
+    const pid = globalHookProc.pid;
+    try { globalHookProc.kill('SIGTERM'); } catch (e) {}
+    if (process.platform === 'win32' && pid) {
+      try {
+        spawn('taskkill', ['/pid', pid.toString(), '/t', '/f'], { windowsHide: true, stdio: 'ignore' });
+      } catch (e) {}
+    }
     globalHookProc = null;
   }
   console.log('[HOOK] Global hook stop requested');
@@ -261,6 +313,7 @@ const DEFAULT_SETTINGS = {
   eyeTrack: true,
   blink: true,
   particles: true,
+  soundEnabled: true,
   shopTheme: 'aurora', // 商店主题：aurora=极光玻璃 / sweet=甜暖风 / pixel=像素风
 };
 let settings = { ...DEFAULT_SETTINGS };
@@ -281,7 +334,7 @@ function loadCoins() {
 }
 function saveCoins() {
   try {
-    fs.writeFileSync(coinsPath, JSON.stringify({ coins }, null, 2));
+    atomicWriteFileSync(coinsPath, JSON.stringify({ coins }, null, 2));
   } catch (e) {
     console.warn('[COINS] Save failed:', e.message);
   }
@@ -301,7 +354,7 @@ function loadSettings() {
 
 function saveSettings() {
   try {
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+    atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2));
     return true;
   } catch (e) {
     console.warn('[SETTINGS] Save failed:', e.message);
@@ -309,25 +362,31 @@ function saveSettings() {
   }
 }
 
-// 把子窗口摆到主窗口旁边（右侧优先，超出屏幕则左侧，再不行则屏幕居中）
+// 把子窗口摆到主窗口旁边（多显示器自适应，右侧优先，超出屏幕则左侧，再不行则屏幕居中）
 function positionNearMain(win) {
   const [w, h] = win.getSize();
-  const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
+  let targetDisplay = screen.getPrimaryDisplay();
+  let mx = 0, my = 0, mw = 420;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    const [curX, curY] = mainWindow.getPosition();
+    const [curW] = mainWindow.getSize();
+    mx = curX; my = curY; mw = curW;
+    targetDisplay = screen.getDisplayNearestPoint({ x: mx + Math.round(mw / 2), y: my + 100 });
+  }
+  const { x: dx, y: dy, width: sw, height: sh } = targetDisplay.workArea;
   let x, y;
   if (mainWindow && !mainWindow.isDestroyed()) {
-    const [mx, my] = mainWindow.getPosition();
-    const [mw] = mainWindow.getSize();
-    if (mx + mw + 12 + w <= sw) {
+    if (mx + mw + 12 + w <= dx + sw) {
       x = mx + mw + 12;            // 主窗口右侧
-    } else if (mx - 12 - w >= 0) {
+    } else if (mx - 12 - w >= dx) {
       x = mx - 12 - w;             // 主窗口左侧
     } else {
-      x = Math.floor((sw - w) / 2); // 屏幕水平居中
+      x = Math.floor(dx + (sw - w) / 2); // 屏幕水平居中
     }
-    y = Math.max(0, Math.min(my, sh - h)); // 跟随主窗口高度并夹紧
+    y = Math.max(dy, Math.min(my, dy + sh - h)); // 跟随主窗口高度并夹紧
   } else {
-    x = Math.floor((sw - w) / 2);
-    y = Math.floor((sh - h) / 2);
+    x = Math.floor(dx + (sw - w) / 2);
+    y = Math.floor(dy + (sh - h) / 2);
   }
   win.setPosition(x, y);
 }
@@ -339,8 +398,8 @@ function createSettingsWindow() {
     return;
   }
   settingsWindow = new BrowserWindow({
-    width: Math.min(600, screen.getPrimaryDisplay().workAreaSize.width),
-    height: Math.min(780, screen.getPrimaryDisplay().workAreaSize.height),
+    width: 600,
+    height: 780,
     frame: false,
     transparent: true,
     resizable: false,
@@ -364,15 +423,30 @@ function createSettingsWindow() {
 }
 
 // ── 设置 IPC ──
-ipcMain.handle('settings-get-all', () => settings);
+ipcMain.handle('settings-get-all', () => {
+  let autoStart = false;
+  try {
+    autoStart = app.getLoginItemSettings().openAtLogin;
+  } catch (e) {}
+  return { ...settings, autoStart };
+});
 
 ipcMain.handle('settings-set', (_e, payload = {}) => {
   const { key, value } = payload;
   if (key === 'shopTheme') return { ok: setShopTheme(value) };
+  if (key === 'autoStart') {
+    try {
+      app.setLoginItemSettings({ openAtLogin: !!value });
+      return { ok: true };
+    } catch (e) {
+      console.warn('[SETTINGS] setLoginItemSettings failed:', e.message);
+      return { ok: false };
+    }
+  }
   const limits = { walkSpeed:[10,80], foodSeekSpeed:[80,800], foodEatDist:[20,100], energyDecay:[0.1,2], energyRecover:[0.5,10] };
   const valid = Object.hasOwn(limits,key)
     ? Number.isFinite(value) && value >= limits[key][0] && value <= limits[key][1]
-    : ['eyeTrack','blink','particles'].includes(key) && typeof value === 'boolean';
+    : ['eyeTrack','blink','particles','soundEnabled'].includes(key) && typeof value === 'boolean';
   if (valid) {
     const oldVal = settings[key];
     settings[key] = value;
@@ -462,7 +536,7 @@ function loadShopUnlocks() {
 
 function saveShopUnlocks() {
   try {
-    fs.writeFileSync(shopUnlockPath, JSON.stringify({
+    atomicWriteFileSync(shopUnlockPath, JSON.stringify({
       items: [...unlockedItems],
       effectsOn: [...enabledEffects],
     }, null, 2));
@@ -697,7 +771,7 @@ function saveCharacter(charKey, skinKey = 'default') {
   currentCharacter = charKey;
   currentSkin = normalizeSkin(charKey, skinKey);
   try {
-    fs.writeFileSync(charConfigPath, JSON.stringify({ character: charKey, skin: currentSkin }), 'utf-8');
+    atomicWriteFileSync(charConfigPath, JSON.stringify({ character: charKey, skin: currentSkin }), 'utf-8');
   } catch (e) { /* ignore */ }
 }
 
@@ -1053,18 +1127,18 @@ ipcMain.on('sync-zoom', (_e, zoom) => {
 });
 
 ipcMain.on('move-window', (_e, dx, dy) => {
-  if (!mainWindow) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
   const [x, y] = mainWindow.getPosition();
   const [w, h] = mainWindow.getSize();
-  const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
+  const { minX, minY, maxX, maxY } = getCombinedWorkArea();
   // 光圈半径（屏幕坐标）：r * zoom * 1.5
   const auraR = 60 * petZoom * AURA_FACTOR;
   // 让光圈能贴到屏幕边缘：窗口可移出屏幕，移出量 = canvas 中心到边的距离 - 光圈半径
   const marginX = CANVAS_CX - auraR;  // 左右各可移出这么多
   const marginYTop = CANVAS_CY - auraR; // 上
   const marginYBottom = h - CANVAS_CY - auraR; // 下
-  const nx = Math.round(Math.max(-marginX, Math.min(sw - w + marginX, x + dx)));
-  const ny = Math.round(Math.max(-marginYTop, Math.min(sh - h + marginYBottom, y + dy)));
+  const nx = Math.round(Math.max(minX - marginX, Math.min(maxX - w + marginX, x + dx)));
+  const ny = Math.round(Math.max(minY - marginYTop, Math.min(maxY - h + marginYBottom, y + dy)));
   mainWindow.setPosition(nx, ny);
 });
 
@@ -1088,9 +1162,9 @@ ipcMain.on('stop-cursor-poll', () => {
   if (cursorTimer) { clearInterval(cursorTimer); cursorTimer = null; }
 });
 
-// ── IPC: 抛掷物理引擎（含边缘飞出检测）──
+// ── IPC: 抛掷物理引擎（多显示器自适应 + 含边缘飞出检测）──
 ipcMain.on('physics-drop', (_e, vx, vy) => {
-  if (!mainWindow) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
   let velX = vx, velY = vy;
   const gravity = 0.9;
   const bounce = 0.45;
@@ -1109,23 +1183,29 @@ ipcMain.on('physics-drop', (_e, vx, vy) => {
 
     const [x, y] = mainWindow.getPosition();
     const [w, h] = mainWindow.getSize();
-    const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
+    const { minX, minY, maxX, maxY } = getCombinedWorkArea();
 
     let nx = x + Math.round(velX);
     let ny = y + Math.round(velY);
 
+    // 动态取当前位置所在（或最接近）的显示器计算地面
+    const currentCenter = { x: Math.round(nx + CANVAS_CX), y: Math.round(ny + CANVAS_CY) };
+    const curDisplay = screen.getDisplayNearestPoint(currentCenter);
+    const { y: dy, height: dh } = curDisplay.workArea;
+
     // 地面弹跳（按光圈半径计算，让光圈贴地）
     const auraR = 60 * petZoom * AURA_FACTOR;
-    const floorY = sh - h + (h - CANVAS_CY) - auraR;
+    const marginYBottom = h - CANVAS_CY - auraR;
+    const floorY = dy + dh - h + marginYBottom;
 
-    // ── 联机模式：边缘飞出检测 ──
+    // ── 联机模式：边缘飞出检测（基于所有屏幕总联合外沿）──
     if (lanEnabled) {
-      // 飞出顶部：y < -200 且向上速度大
-      if (ny < -200 && velY < -3) {
+      // 飞出顶部：y < minY - 200 且向上速度大
+      if (ny < minY - 200 && velY < -3) {
         edgeEscaped = true;
       }
-      // 飞出左右：x 超出且速度大
-      if ((nx < -200 && velX < -3) || (nx > sw + 200 && velX > 3)) {
+      // 飞出左右外沿：x 超出且速度大
+      if ((nx < minX - 200 && velX < -3) || (nx > maxX + 200 && velX > 3)) {
         edgeEscaped = true;
       }
 
@@ -1135,15 +1215,14 @@ ipcMain.on('physics-drop', (_e, vx, vy) => {
 
         const peers = lan.getPeers();
         if (peers.length === 0) {
-          // 联机开启但无在线 peer：弹回
-          mainWindow.setPosition(Math.floor((sw - 420) / 2), sh - 500);
+          // 联机开启但无在线 peer：弹回当前屏幕底部中央
+          mainWindow.setPosition(Math.floor(curDisplay.workArea.x + (curDisplay.workArea.width - 420) / 2), curDisplay.workArea.y + curDisplay.workArea.height - 500);
           mainWindow.webContents.send('pet-edge-bounce-back');
         } else {
-          // 选择最活跃的 peer（lan.getPeers 内部已按发现时间排序，取最新一个）
-          // 不固定取第一个，避免总是发给同一台
+          // 选择最活跃的 peer
           const peer = peers[peers.length - 1];
           mainWindow.webContents.send('pet-edge-escape', {
-            dir: ny < -200 ? 'top' : (nx < 0 ? 'left' : 'right'),
+            dir: ny < minY - 200 ? 'top' : (nx < minX ? 'left' : 'right'),
             vx: velX, vy: velY,
             peer,
           });
@@ -1164,10 +1243,11 @@ ipcMain.on('physics-drop', (_e, vx, vy) => {
         velX *= 0.8;
       }
     }
-    // 左右墙（按光圈半径计算，让光圈贴边弹跳）
+
+    // 联合屏幕总外边框弹跳（让光圈贴边弹跳）
     const marginX = CANVAS_CX - auraR;
-    if (nx < -marginX) { nx = -marginX; velX = -velX * bounce; }
-    if (nx > sw - w + marginX) { nx = sw - w + marginX; velX = -velX * bounce; }
+    if (nx < minX - marginX) { nx = minX - marginX; velX = -velX * bounce; }
+    if (nx > maxX - w + marginX) { nx = maxX - w + marginX; velX = -velX * bounce; }
 
     // 坐标合法性校验：多显示器切换/DPI 变化可能导致 NaN，避免 setPosition 抛错+定时器泄漏
     if (!Number.isFinite(nx) || !Number.isFinite(ny)) {
@@ -1284,7 +1364,7 @@ function writeHeartbeat() {
       foodModeEnabled,
       foodCount: foods.length,
     };
-    fs.writeFileSync(heartbeatPath, JSON.stringify(data, null, 2));
+    atomicWriteFileSync(heartbeatPath, JSON.stringify(data, null, 2));
   } catch (e) { /* ignore */ }
 }
 
@@ -1298,6 +1378,24 @@ app.whenReady().then(() => {
   startGlobalHook();  // 启动统一快捷键监听（H + Ctrl+LeftClick）
   writeHeartbeat();
   heartbeatTimer = setInterval(writeHeartbeat, 5000);
+
+  // 监听显示器拔出，若宠物落于屏幕外则自动召回主屏
+  screen.on('display-removed', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    const [x, y] = mainWindow.getPosition();
+    const [w, h] = mainWindow.getSize();
+    const center = { x: x + Math.round(w / 2), y: y + Math.round(h / 2) };
+    const displays = screen.getAllDisplays();
+    const isInside = displays.some(d => {
+      const b = d.bounds;
+      return center.x >= b.x && center.x <= b.x + b.width && center.y >= b.y && center.y <= b.y + b.height;
+    });
+    if (!isInside) {
+      const primary = screen.getPrimaryDisplay().workArea;
+      mainWindow.setPosition(Math.floor(primary.x + (primary.width - w) / 2), primary.y + primary.height - 500);
+      console.log('[SCREEN] Pet was outside removed display, recalled to primary display');
+    }
+  });
 
   // 设置 LAN 回调（但不自动启动，需手动开启联机模式）
   lan.onPetReceived = (state) => {
@@ -1315,12 +1413,23 @@ app.whenReady().then(() => {
   };
 });
 
-app.on('window-all-closed', () => {
-  if (cursorTimer) clearInterval(cursorTimer);
-  if (physicsTimer) clearInterval(physicsTimer);
-  if (heartbeatTimer) clearInterval(heartbeatTimer);
+function cleanupApp() {
+  isAppQuitting = true;
+  if (cursorTimer) { clearInterval(cursorTimer); cursorTimer = null; }
+  if (physicsTimer) { clearInterval(physicsTimer); physicsTimer = null; }
+  if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
   stopGlobalHook();
   lan.stop();
-  if (tray) tray.destroy();
+  if (tray) {
+    try { tray.destroy(); } catch (e) {}
+    tray = null;
+  }
+}
+
+app.on('before-quit', cleanupApp);
+app.on('will-quit', cleanupApp);
+
+app.on('window-all-closed', () => {
+  cleanupApp();
   app.quit();
 });

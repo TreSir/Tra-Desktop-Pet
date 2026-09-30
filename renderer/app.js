@@ -388,6 +388,7 @@ function feedPet(effect) {
   setEmotion('love', '好好吃~');
   pet.sleepTimer = 30;
   for (let i = 0; i < 3; i++) spawnHeart();
+  window.SoundFX?.play('eat');
 
   // 进食粒子
   for (let i = 0; i < 8; i++) {
@@ -433,6 +434,7 @@ const RUNTIME = {
   eyeTrack: true,
   blink: true,
   particles: true,
+  soundEnabled: true,
   shopTheme: 'aurora', // 全局主题：aurora=极光玻璃 / sweet=甜暖风 / pixel=像素风
 };
 let foodMoveAccumX = 0, foodMoveAccumY = 0; // 累积移动量，减少 IPC 频率
@@ -1295,6 +1297,7 @@ function updateSleep(dt) {
     if (pet.sleepTimer <= 0 && !pet.dragging && !pet.falling) {
       pet.sleeping = true;
       setEmotion('sleepy', 'Zzz…');
+      window.SoundFX?.play('sleep');
     }
   }
 
@@ -1306,6 +1309,7 @@ function updateSleep(dt) {
       setEmotion('shocked', '！');
       pet.squashVY += -0.1;
       pet.squashVX += 0.08;
+      window.SoundFX?.play('wake');
     }
   }
 }
@@ -2028,6 +2032,7 @@ function onCaughtMidAir(x, y) {
   // 心情大涨
   pet.mood = clamp(pet.mood + 18, 0, 100);
   pet.energy = clamp(pet.energy + 8, 0, 100);
+  window.SoundFX?.play('catch');
 
   // 表情：先震惊后开心
   setEmotion('shocked', '？！');
@@ -2096,6 +2101,7 @@ function gainCoins(amount, reason, x, y) {
   coinGainCooldown = now;
   window.petAPI.addCoins(amount);
   spawnCoinPopup(x, y, amount);
+  window.SoundFX?.play('coin');
   // 顶部计数显示淡入
   pet.coinDisplayAlpha = 1;
   console.log(`[COINS] +${amount} (${reason})`);
@@ -2260,6 +2266,7 @@ canvas.addEventListener('mouseup', (e) => {
     pet.combo++;
     pet.comboTimer = 2;
     pet.comboShake = 1;
+    window.SoundFX?.play('combo', pet.combo);
 
     // 产生心形/星尘
     if (pet.combo >= 3) {
@@ -2459,6 +2466,9 @@ window.petAPI.onSettingsChanged(({ key, value }) => {
   if (key in RUNTIME) {
     RUNTIME[key] = value;
     console.log(`[SETTINGS] applied: ${key} = ${value}`);
+    if (key === 'soundEnabled') {
+      window.SoundFX?.setEnabled(value);
+    }
     // 主题变化时重绘托盘图标
     if (key === 'shopTheme') {
       genTrayIcon(value);
@@ -2516,6 +2526,7 @@ window.petAPI.syncZoom(pet.zoom);
 window.petAPI.onPhysicsBounce((force) => {
   pet.squashVY += clamp(-force * 0.04, -0.2, 0);
   pet.squashVX += clamp(force * 0.03, 0, 0.15);
+  window.SoundFX?.play('bounce', force);
   if (force > 4) {
     setEmotion('shocked', '！');
     pet.shakeIntensity = clamp(force * 0.05, 0, 0.5);
@@ -2528,6 +2539,7 @@ window.petAPI.onPhysicsLanded(() => {
   pet.squashVY += -0.18;
   pet.squashVX += 0.15;
   setEmotion('relaxed', '');
+  window.SoundFX?.play('bounce', 2.0);
   spawnShockwave(CFG.cx, CFG.cy + 35, 1.5);
   spawnCracks(CFG.cx, CFG.cy + 35, 6, 0.8);
   pet.shakeIntensity = 0.15;
@@ -2886,10 +2898,18 @@ function genTrayIcon(theme) {
     for (const k of Object.keys(RUNTIME)) {
       if (s[k] !== undefined) RUNTIME[k] = s[k];
     }
+    if (RUNTIME.soundEnabled !== undefined) {
+      window.SoundFX?.setEnabled(RUNTIME.soundEnabled);
+    }
     console.log('[SETTINGS] seeded from saved settings');
   } catch (e) {
     console.warn('[SETTINGS] seed failed:', e.message);
   }
   genTrayIcon(RUNTIME.shopTheme);
 })();
+
+// 用户首次交互时解锁 AudioContext（标准 Web Audio 规范）
+window.addEventListener('mousedown', () => window.SoundFX?.unlock(), { once: true });
+window.addEventListener('keydown', () => window.SoundFX?.unlock(), { once: true });
+
 requestAnimationFrame(loop);
