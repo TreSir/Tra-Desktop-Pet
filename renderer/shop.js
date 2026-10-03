@@ -2,7 +2,7 @@
 let state = null;
 let category = 'all';
 const pending = new Set();
-const labels = { all:'探索全部好物', food:'补给小食', emotion:'让心情有个表情', effect:'一点点桌面魔法', owned:'我的收藏' };
+const labels = { all:'探索全部好物', food:'补给小食', emotion:'让心情有个表情', effect:'一点点桌面魔法', owned:'我的收藏', active:'正在使用的魔法' };
 const colors = { food:'#edc89a', emotion:'#dfb1e3', effect:'#a1ded9' };
 const grid = document.getElementById('productGrid');
 function make(tag, className, text) {
@@ -16,14 +16,31 @@ function render() {
   const focused = document.activeElement?.dataset.action;
   document.getElementById('balanceText').textContent = state.coins.toLocaleString('zh-CN');
   document.getElementById('collectionCount').textContent = '收藏 ' + state.unlocked.length + ' 件';
+  document.getElementById('ownedTotal').textContent = state.unlocked.length + ' 件';
+  document.getElementById('activeTotal').textContent = state.effectsOn.length + ' 种';
+  document.getElementById('walletTotal').textContent = state.coins.toLocaleString('zh-CN') + ' 币';
   document.getElementById('categoryTitle').textContent = labels[category];
   grid.replaceChildren();
   let count = 0;
+  const query = document.getElementById('searchInput').value.trim().toLocaleLowerCase('zh-CN');
+  const affordable = document.getElementById('affordableOnly').checked;
+  const sort = document.getElementById('sortOrder').value;
+  document.getElementById('clearFilters').hidden = !query && !affordable && sort === 'default';
+  const products = [];
   for (const [group, items] of Object.entries(state.catalog)) {
-    if (!['all','owned',group].includes(category)) continue;
+    if (!['all','owned','active',group].includes(category)) continue;
     for (const item of items) {
       const owned = state.unlocked.includes(item.id);
       if (category === 'owned' && !owned) continue;
+      if (category === 'active' && !state.effectsOn.includes(item.id)) continue;
+      if (query && !(item.name + ' ' + item.desc).toLocaleLowerCase('zh-CN').includes(query)) continue;
+      if (affordable && !owned && state.coins < item.price) continue;
+      products.push({group,item,owned});
+    }
+  }
+  if (sort === 'price') products.sort((a,b) => a.item.price - b.item.price);
+  if (sort === 'name') products.sort((a,b) => a.item.name.localeCompare(b.item.name,'zh-CN'));
+  for (const {group,item,owned} of products) {
       count++;
       const enabled = state.effectsOn.includes(item.id);
       const card = make('article', 'product' + (owned ? ' owned' : ''));
@@ -44,12 +61,29 @@ function render() {
       bottom.append(button);
       card.append(top,make('h3','',item.name),make('p','product-description',item.desc),bottom);
       grid.append(card);
-    }
   }
   document.getElementById('itemCount').textContent = count + ' 件好物';
   document.getElementById('emptyState').hidden = count > 0;
+  document.getElementById('emptyText').textContent = query || affordable
+    ? '没有找到匹配的好物，试试其他关键词或清除筛选。'
+    : category === 'active' ? '还没有启用特效。去魔法特效中挑一个吧。'
+    : '还没有收藏。解锁表情和特效，让它更有个性。';
   if (focused) [...grid.querySelectorAll('button')].find(button => button.dataset.action === focused)?.focus({preventScroll:true});
 }
+for (const id of ['searchInput','sortOrder','affordableOnly']) {
+  document.getElementById(id).addEventListener(id === 'searchInput' ? 'input' : 'change',render);
+}
+document.getElementById('clearFilters').addEventListener('click',() => {
+  document.getElementById('searchInput').value = '';
+  document.getElementById('sortOrder').value = 'default';
+  document.getElementById('affordableOnly').checked = false;
+  render(); document.getElementById('searchInput').focus();
+});
+document.addEventListener('keydown',event => {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+    event.preventDefault(); document.getElementById('searchInput').focus();
+  }
+});
 async function transact(item, group, owned) {
   if (pending.has(item.id)) return;
   pending.add(item.id); render();

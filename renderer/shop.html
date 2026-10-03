@@ -21,6 +21,7 @@
       <button class="nav-button" data-category="emotion" aria-pressed="false"><span class="nav-icon">☺</span>心情表情</button>
       <button class="nav-button" data-category="effect" aria-pressed="false"><span class="nav-icon">✧</span>魔法特效</button>
       <button class="nav-button" data-category="owned" aria-pressed="false"><span class="nav-icon">▧</span>我的收藏</button>
+      <button class="nav-button" data-category="active" aria-pressed="false"><span class="nav-icon">✦</span>正在使用</button>
       <span class="grow"></span>
       <div class="nav-tip"><strong>陪伴，自有回响。</strong>摸摸它、陪它玩，<br>把羁绊换成小惊喜。</div>
       <button class="nav-button" id="openSettings"><span class="nav-icon">⚙</span>偏好设置 ↗</button>
@@ -33,10 +34,16 @@
         <p>一份小食，一点魔法。<br>把平凡的桌面，变成它的小世界。</p>
         <img class="hero-art" src="assets/slime-jade.png" alt="翡翠色史莱姆桌宠">
       </section>
-      <div class="section-head"><h2 id="categoryTitle">探索全部好物</h2><span class="count" id="itemCount">正在加载…</span></div>
+      <div class="shop-summary" aria-label="收藏概览"><div><span>永久收藏</span><strong id="ownedTotal">—</strong></div><div><span>启用特效</span><strong id="activeTotal">—</strong></div><div><span>陪伴积攒</span><strong id="walletTotal">—</strong></div></div>
+      <div class="section-head"><h2 id="categoryTitle">探索全部好物</h2><span class="count" id="itemCount" role="status" aria-live="polite">正在加载…</span></div>
+      <div class="shop-tools">
+        <label class="search-box"><span aria-hidden="true">⌕</span><input id="searchInput" type="search" placeholder="找小食、表情或魔法…" aria-label="搜索商品" maxlength="80"><kbd aria-hidden="true">Ctrl K</kbd></label>
+        <select id="sortOrder" aria-label="商品排序"><option value="default">推荐顺序</option><option value="price">价格从低到高</option><option value="name">名称排序</option></select>
+      </div>
+      <div class="shop-filter"><label><input id="affordableOnly" type="checkbox">只看买得起的好物</label><button id="clearFilters" class="footer-link" hidden>清除筛选</button></div>
       <div id="loadError" class="notice" hidden><p>商店暂时没连上，稍后再试一下。</p><button class="button" id="retryBtn">重新加载</button></div>
       <div class="grid" id="productGrid" aria-busy="true"></div>
-      <div class="notice" id="emptyState" hidden>还没有收藏。解锁表情和特效，让它更有个性。</div>
+      <div class="notice" id="emptyState" hidden><span class="empty-icon" aria-hidden="true">✧</span><p id="emptyText">还没有收藏。解锁表情和特效，让它更有个性。</p></div>
     </main>
   </div>
   <footer class="bottom-bar"><span class="status-dot"></span><span>每一次互动，都让羁绊多一点</span><span class="grow"></span><span id="collectionCount">收藏 —</span></footer>

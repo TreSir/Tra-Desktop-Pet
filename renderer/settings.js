@@ -15,6 +15,17 @@ const toggles = [
 ];
 let saveQueue = Promise.resolve();
 let saveVersion = 0;
+let currentSettings = {};
+function updatePresets() {
+  let matched = false;
+  for (const button of document.querySelectorAll('[data-preset]')) {
+    const selected = Object.entries(currentSettings.presets[button.dataset.preset].values)
+      .every(([key,value]) => currentSettings[key] === value);
+    button.setAttribute('aria-pressed',String(selected));
+    matched ||= selected;
+  }
+  document.getElementById('presetStatus').textContent = matched ? '当前节奏已匹配' : '自定义节奏';
+}
 function save(key,value) {
   const version = ++saveVersion;
   document.getElementById('saveStatus').textContent = '正在保存…';
@@ -22,15 +33,31 @@ function save(key,value) {
     try {
       const result = await window.settingsAPI.set(key,value);
       if (!result?.ok) throw new Error('save failed');
+      currentSettings[key] = value;
+      updatePresets();
       if (version === saveVersion) document.getElementById('saveStatus').textContent = '✓ 已保存，正在陪伴';
     } catch (_) {
       document.getElementById('saveStatus').textContent = '保存失败，请重试';
       StudioUI.toast('设置未能保存，请再调整一次。');
+      if (version === saveVersion) render(currentSettings);
     }
   });
   return saveQueue;
 }
 function render(settings) {
+  currentSettings = settings;
+  const presetGrid = document.getElementById('presetGrid');
+  presetGrid.replaceChildren();
+  for (const [id,preset] of Object.entries(settings.presets || {})) {
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'preset-card'; button.dataset.preset = id;
+    const icon = document.createElement('span'), name = document.createElement('strong'), desc = document.createElement('small');
+    icon.className = 'preset-icon'; icon.textContent = preset.icon; icon.setAttribute('aria-hidden','true');
+    name.textContent = preset.name; desc.textContent = preset.desc;
+    button.append(icon,name,desc); button.addEventListener('click',() => applyPreset(id));
+    presetGrid.append(button);
+  }
+  updatePresets();
   for (const id of ['movementControls','energyControls','interactionControls']) document.getElementById(id).replaceChildren();
   for (const config of ranges) {
     const row = document.createElement('div');
@@ -57,6 +84,22 @@ function render(settings) {
     input.addEventListener('change',() => save(config.id,input.checked));
     document.getElementById('interactionControls').append(row);
   }
+}
+async function applyPreset(id) {
+  const fields = document.getElementById('settingsFields');
+  fields.disabled = true;
+  await saveQueue;
+  document.getElementById('saveStatus').textContent = '正在应用陪伴节奏…';
+  try {
+    const result = await window.settingsAPI.applyPreset(id);
+    if (!result?.ok) throw new Error('preset failed');
+    render(result.settings);
+    document.getElementById('saveStatus').textContent = '✓ 陪伴节奏已保存';
+    StudioUI.toast('已切换到' + result.settings.presets[id].name);
+  } catch (_) {
+    document.getElementById('saveStatus').textContent = '应用失败，请重试';
+    StudioUI.toast('未能应用陪伴节奏，请再试一次。');
+  } finally { fields.disabled = false; }
 }
 async function init() {
   document.getElementById('loadError').hidden = true;

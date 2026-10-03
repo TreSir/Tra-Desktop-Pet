@@ -11,9 +11,16 @@
     if (/^assets\/[\w-]+\.png$/.test(src || '')) node.src=src;
     return node;
   }
+  function color(node, colors) {
+    if (Array.isArray(colors) && colors.length === 3 && colors.every(Number.isFinite)) {
+      node.style.setProperty('--pet-glow','rgb(' + colors.map(value=>Math.max(0,Math.min(255,value))).join(',') + ')');
+    }
+  }
   async function act(item) {
     if(pending || !item?.enabled) return;
+    const focus=document.activeElement?.dataset.action;
     pending=true;
+    if(state) render(state);
     const active=document.activeElement; if(active?.matches('button,input')) active.disabled=true;
     try {
       const result=await window.trayAPI.action(item.id);
@@ -21,11 +28,14 @@
       if(result.state) render(result.state);
       if(!['shop','settings','quit','bottom','recall'].includes(item.key)) StudioUI.toast('已应用 · '+clean(item.label));
     } catch { StudioUI.toast('操作暂时没完成，请再试一次。'); }
-    finally { pending=false; if(active?.isConnected) active.disabled=false; if(state) render(state); }
+    finally {
+      pending=false; if(active?.isConnected) active.disabled=false; if(state) render(state);
+      if(focus) [...document.querySelectorAll('[data-action]')].find(node=>node.dataset.action===focus)?.focus({preventScroll:true});
+    }
   }
   function button(item,className,text) {
     const node=el('button',className,text || clean(item.label)); node.type='button'; node.dataset.action=item.id;
-    node.disabled=!item.enabled; node.addEventListener('click',()=>act(item));
+    node.disabled=pending || !item.enabled; node.addEventListener('click',()=>act(item));
     if(item.type==='radio') node.setAttribute('aria-pressed',String(item.checked));
     return node;
   }
@@ -58,12 +68,12 @@
     const grid=el('div','choice-grid'), characters=Object.entries(state.characters);
     for(const [key,char] of characters) {
       const item=root('characters')?.children?.find(x=>clean(x.label)===char.name); if(!item) continue;
-      const b=button(item,'choice',char.name); b.prepend(image(char.spriteSrc,char.name)); grid.append(b);
+      const b=button(item,'choice',char.name); color(b,char.glowColor); b.prepend(image(char.spriteSrc,char.name)); grid.append(b);
     }
     target.append(grid); heading(target,'它的衣橱','只改变当前宠物外观');
     const char=state.characters[state.currentCharacter]; const skins=el('div','skin-grid');
     for(const [i,item] of (root('skins')?.children || []).entries()) {
-      const skin=i===0?char:char.skins?.[i-1]; const b=button(item,'choice',clean(item.label)); b.prepend(image(skin?.spriteSrc,clean(item.label))); skins.append(b);
+      const skin=i===0?char:char.skins?.[i-1]; const b=button(item,'choice',clean(item.label)); color(b,skin?.glowColor); b.prepend(image(skin?.spriteSrc,clean(item.label))); skins.append(b);
     }
     target.append(skins,el('p','wardrobe-note',char.skins?.length?'每套皮肤都有自己的颜色与光效，选中即可换装。':'这位伙伴目前拥有默认外观。去看看其他伙伴的衣橱吧。'));
   }
@@ -79,6 +89,7 @@
       const item=root(key); if(!item) continue;
       const label=el('label','tray-toggle'); const copy=el('span'); copy.append(el('b','',title),el('small','',desc));
       const input=el('input','switch'); input.type='checkbox'; input.setAttribute('role','switch'); input.setAttribute('aria-label',title); input.checked=!!item.checked; input.dataset.action=item.id;
+      input.disabled=pending || !item.enabled;
       input.addEventListener('change',()=>{ input.checked=!!item.checked; act(item); }); label.append(copy,input); toggles.append(label);
     }
     target.append(toggles);
@@ -96,11 +107,14 @@
     const char=state.characters[state.currentCharacter];
     if(char) {
       const skin=char.skins?.find(s=>s.id===state.currentSkin);
+      color(document.querySelector('.pet-card'),skin?.glowColor || char.glowColor);
+      $('petPortrait').alt=char.name + ' · ' + (skin?.name || '默认外观');
       $('petName').textContent=char.name; $('skinName').textContent=(skin?.name || '默认外观')+' · 当前陪伴';
       const src=skin?.spriteSrc || char.spriteSrc;
       if(/^assets\/[\w-]+\.png$/.test(src)) { if($('petPortrait').getAttribute('src')!==src) $('petPortrait').src=src; $('petPortrait').hidden=false; }
     }
-    const key=JSON.stringify([state.menus,state.currentCharacter,state.currentSkin]);
+    document.querySelector('.tray-scroll').setAttribute('aria-busy',String(pending));
+    const key=JSON.stringify([state.menus,state.currentCharacter,state.currentSkin,pending,state.peerCount,state.lanEnabled]);
     if(key!==bodyKey) {
       bodyKey=key; const focus=document.activeElement?.dataset.action, top=document.querySelector('.tray-scroll').scrollTop;
       const expanded=$('home').querySelector('details')?.open;

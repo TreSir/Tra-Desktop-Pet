@@ -268,7 +268,7 @@ function createFoodWindow() {
   // 'screen-saver' 是最高 z-order 级别，确保覆盖在桌宠窗口之上
   foodWindow.setAlwaysOnTop(true, 'screen-saver');
   foodWindow.setIgnoreMouseEvents(true); // 全程 click-through，不影响任何桌面操作
-  foodWindow.loadFile('renderer/food_window.html');
+  foodWindow.loadFile(path.join(__dirname,'renderer','food_window.html'));
   foodWindow.once('ready-to-show', () => {
     if (foodModeEnabled) {
       foodWindow.show();
@@ -317,6 +317,11 @@ const DEFAULT_SETTINGS = {
   shopTheme: 'aurora', // 商店主题：aurora=极光玻璃 / sweet=甜暖风 / pixel=像素风
 };
 let settings = { ...DEFAULT_SETTINGS };
+const COMPANION_PRESETS = {
+  calm: { name:'安静陪伴', icon:'☾', desc:'慢慢散步，静静陪你工作', values:{walkSpeed:18,foodSeekSpeed:240,energyDecay:0.2,energyRecover:2,particles:false,soundEnabled:false} },
+  playful: { name:'活泼伙伴', icon:'✳', desc:'步伐轻快，声音与微粒常伴', values:{walkSpeed:48,foodSeekSpeed:480,energyDecay:0.4,energyRecover:3,particles:true,soundEnabled:true} },
+  balanced: { name:'日常节奏', icon:'◒', desc:'舒适的速度，恰到好处的反馈', values:{walkSpeed:28,foodSeekSpeed:320,energyDecay:0.3,energyRecover:2,particles:true,soundEnabled:true} },
+};
 
 // ── 羁绊币系统（接触宠物获得，可兑换交互）──
 const coinsPath = path.join(app.getPath('userData'), 'coins.json');
@@ -398,8 +403,8 @@ function createSettingsWindow() {
     return;
   }
   settingsWindow = new BrowserWindow({
-    width: 600,
-    height: 780,
+    width: Math.min(600, screen.getPrimaryDisplay().workAreaSize.width),
+    height: Math.min(780, screen.getPrimaryDisplay().workAreaSize.height),
     frame: false,
     transparent: true,
     resizable: false,
@@ -415,7 +420,7 @@ function createSettingsWindow() {
     },
   });
   positionNearMain(settingsWindow);
-  settingsWindow.loadFile('renderer/settings.html');
+  settingsWindow.loadFile(path.join(__dirname,'renderer','settings.html'));
   settingsWindow.on('closed', () => { settingsWindow = null; });
   settingsWindow.webContents.on('console-message', (_e, level, message) => {
     console.log(`[SETTINGS-WIN] ${message}`);
@@ -423,12 +428,26 @@ function createSettingsWindow() {
 }
 
 // ── 设置 IPC ──
-ipcMain.handle('settings-get-all', () => {
+function settingsSnapshot() {
   let autoStart = false;
   try {
     autoStart = app.getLoginItemSettings().openAtLogin;
   } catch (e) {}
-  return { ...settings, autoStart };
+  return { ...settings, autoStart, presets:COMPANION_PRESETS };
+}
+ipcMain.handle('settings-get-all', settingsSnapshot);
+
+ipcMain.handle('settings-apply-preset', (event, id) => {
+  if (!settingsWindow || settingsWindow.isDestroyed() || event.sender !== settingsWindow.webContents ||
+      typeof id !== 'string' || !Object.hasOwn(COMPANION_PRESETS,id)) return { ok:false };
+  const previous = settings;
+  const values = COMPANION_PRESETS[id].values;
+  settings = { ...settings, ...values };
+  if (!saveSettings()) { settings = previous; return { ok:false }; }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    for (const [key,value] of Object.entries(values)) mainWindow.webContents.send('settings-changed',{key,value});
+  }
+  return { ok:true, settings:settingsSnapshot() };
 });
 
 ipcMain.handle('settings-set', (_e, payload = {}) => {
@@ -574,7 +593,7 @@ function createShopWindow() {
     },
   });
   positionNearMain(shopWindow);
-  shopWindow.loadFile('renderer/shop.html');
+  shopWindow.loadFile(path.join(__dirname,'renderer','shop.html'));
   shopWindow.on('closed', () => { shopWindow = null; });
   shopWindow.webContents.on('console-message', (_e, level, message) => {
     console.log(`[SHOP-WIN] ${message}`);

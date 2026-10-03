@@ -1,10 +1,11 @@
 {
   "name": "symbiote-pet",
   "version": "1.0.0",
-  "description": "Digital Symbiote Desktop Pet - 暗色粘液生物桌宠",
+  "description": "Companion 桌面宠物：多角色皮肤、桌面投喂与局域网互动",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "check": "node scripts/check.cjs"
   },
   "devDependencies": {
     "electron": "^33.4.11"
